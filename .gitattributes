@@ -1,0 +1,3 @@
+# 统一用 LF。理由同 Agentd 仓库：Windows / WSL2 双端开发，
+# 不锁死换行符就会出现"整文件重写"的假 diff，真实改动被淹没。
+* text=auto eol=lf
