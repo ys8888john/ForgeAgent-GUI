@@ -8,6 +8,36 @@
 
 ## 跑起来
 
+### Windows
+
+**别用裸 `python`** —— 如果系统装过微软商店的 Python 占位别名（设置 → 应用 →
+高级应用设置 → 应用执行别名），`python` 会解析到 `WindowsApps\python.exe`，
+报 *"Python was not found; run without arguments to install from the Microsoft Store"*。
+这台机器上就是这种情况。用 venv 里的解释器，绕开 PATH 上的别名：
+
+```powershell
+cd D:\workspace\ForgeAgent-GUI
+
+# 第一次：建 venv 并装依赖（agentd 是另一个仓库，一起装进来）
+C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]" -e "D:\workspace\Agentd"
+
+# 启动界面
+.\.venv\Scripts\python.exe -m forgeagent
+
+# 三跳验证
+.\.venv\Scripts\python.exe scripts\e2e.py --cwd D:\workspace\Agentd
+```
+
+想少敲路径就激活 venv（若 PowerShell 报执行策略错误，用上面带全路径的写法即可）：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m forgeagent
+```
+
+### Linux / WSL2
+
 ```bash
 cd /root/workspace/ForgeAgent-GUI
 pip install -e .
