@@ -7,6 +7,9 @@ window.py 分开的原因：窗口层没法在 CI 里测，桥接层能。
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 
 from forgeagent.acp_client import Turn
@@ -27,10 +30,14 @@ class _FakeClient:
         *,
         fail_start: bool = False,
         fail_prompt: bool = False,
+        gate=None,
     ) -> None:
         self._chunks = chunks
         self._fail_start = fail_start
         self._fail_prompt = fail_prompt
+        # gate 不为 None 时，吐完增量后会一直等它被 set 才收尾。
+        # 用来把「上一轮还没结束」变成确定状态，而不是靠时序碰运气。
+        self._gate = gate
         self.session_id = "sess_test123456"
         self.stderr_lines = ["[agentd] 自动选用 Ollama 模型: qwen3.5:9b-text"]
         self.started = False
@@ -51,6 +58,9 @@ class _FakeClient:
         for chunk in self._chunks:
             turn.text += chunk
             yield turn
+        if self._gate is not None:
+            while not self._gate.is_set():
+                await asyncio.sleep(0.01)
         turn.stop_reason = "end_turn"
         yield turn
 
@@ -143,15 +153,27 @@ def test_send_rejects_empty_text():
 
 
 def test_second_send_while_busy_is_rejected():
-    """上一轮没结束就再发会写乱历史，必须挡住。"""
-    bridge = Bridge(client=_FakeClient())
+    """上一轮没结束就再发会写乱历史，必须挡住。
+
+    用 gate 把「上一轮还没结束」钉死：不加的话，假 client 跑得太快，
+    后台事件循环可能已经把 _busy 清了，测试就变成碰运气。
+    """
+    import threading
+
+    gate = threading.Event()
+    bridge = Bridge(client=_FakeClient(gate=gate))
     try:
         assert bridge.send("第一轮")["ok"] is True
+        # 等增量出来，确认这一轮确实进行中
+        assert any(e["type"] == "delta" for e in _drain_until_done(bridge, rounds=3))
         assert bridge.send("第二轮")["ok"] is False
+
+        gate.set()          # 放行，让第一轮收尾
         _drain_until_done(bridge)
         # 结束后又能发了
         assert bridge.send("第三轮")["ok"] is True
     finally:
+        gate.set()
         bridge.close()
 
 
@@ -209,6 +231,73 @@ def test_next_events_after_close_returns_empty():
     bridge = Bridge(client=_FakeClient())
     bridge.close()
     assert bridge.next_events(timeout=0.1) == []
+
+
+# ---- 反向通道：Python 让界面干活 / 界面自报状态 ----
+
+def test_push_command_comes_back_as_command_event():
+    """外部（含冒烟测试）要能让界面自己发消息，而不是 Python 代发。"""
+    bridge = Bridge(client=_FakeClient())
+    try:
+        bridge.push_command({"action": "send", "text": "你好"})
+        evs = bridge.next_events(timeout=0.5)
+        assert evs == [{"type": "command", "cmd": {"action": "send", "text": "你好"}}]
+    finally:
+        bridge.close()
+
+
+def test_command_is_returned_immediately_without_waiting_for_events():
+    """命令不该被 2 秒长轮询拖住 —— 它优先级更高。"""
+    bridge = Bridge(client=_FakeClient())
+    try:
+        bridge.push_command({"action": "report"})
+        t0 = time.time()
+        evs = bridge.next_events(timeout=5.0)
+        assert time.time() - t0 < 1.0
+        assert evs[0]["type"] == "command"
+    finally:
+        bridge.close()
+
+
+def test_push_command_ignores_non_dict():
+    bridge = Bridge(client=_FakeClient())
+    try:
+        bridge.push_command("oops")  # type: ignore[arg-type]
+        assert bridge.next_events(timeout=0.2) == []
+    finally:
+        bridge.close()
+
+
+def test_ui_report_accumulates_and_is_readable_from_outside():
+    """界面自报状态：外部（含冒烟测试）靠它判断「界面到底渲染出来没有」。"""
+    bridge = Bridge(client=_FakeClient())
+    try:
+        bridge.ui_report({"bridge": "ready"})
+        bridge.ui_report({"status": "stop=end_turn"})
+        assert bridge.ui_state() == {"bridge": "ready", "status": "stop=end_turn"}
+    finally:
+        bridge.close()
+
+
+def test_ui_report_ignores_non_dict():
+    bridge = Bridge(client=_FakeClient())
+    try:
+        bridge.ui_report("oops")  # type: ignore[arg-type]
+        assert bridge.ui_state() == {}
+    finally:
+        bridge.close()
+
+
+def test_ui_state_returns_a_copy():
+    """外面的代码改了副本不能影响内部状态。"""
+    bridge = Bridge(client=_FakeClient())
+    try:
+        bridge.ui_report({"bridge": "ready"})
+        snap = bridge.ui_state()
+        snap["bridge"] = "tampered"
+        assert bridge.ui_state()["bridge"] == "ready"
+    finally:
+        bridge.close()
 
 
 def test_close_stops_client_and_thread():

@@ -168,12 +168,68 @@
   var current = null;      // 当前正在流式输出的 bubble
   var autoScroll = true;
   var logTimer = null;
+  var started = false;
 
-  if (typeof pywebview === "undefined") {
-    setStatus("error", "不是通过 pywebview 打开的，无法连接后端");
-    input.disabled = true;
-    sendBtn.disabled = true;
-    return;
+  // ---- 跟本机 Python 进程通信 ----
+  //
+  // 这一版刻意**不用** pywebview 的 js_api。原因写在 server.py 的模块注释里，
+  // 简单说：那条链路依赖宿主往页面注入 window.pywebview，实测又慢又爱丢；
+  // 换成「窗口里跑普通网页 + fetch 本机 127.0.0.1」之后，三平台行为一致，
+  // 而且能脱离 GUI 直接测。
+  //
+  // token 从 URL fragment 里取（#token=xxx）。fragment 不会发给服务端，
+  // 所以服务端不可能从请求里学到它 —— 每次请求再单独用 header 带过去。
+  var TOKEN = (function () {
+    // 正常情况：服务端渲染时把 token 直接替换进来了（见 server.py 的 _file）
+    var inline = "__FORGEAGENT_TOKEN__";
+    if (inline && inline.indexOf("__FORGEAGENT") !== 0) return inline;
+    // 兜底：URL fragment 里也带一份
+    var m = /[#&]token=([^&]+)/.exec(location.hash || "");
+    return m ? decodeURIComponent(m[1]) : "";
+  })();
+
+  // 启动信标：脚本一执行就报一次。排查时靠它区分「HTML 加载了但脚本没跑」
+  // 和「脚本跑了但后面断了」。
+  try {
+    fetch("/api/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-ForgeAgent-Token": TOKEN },
+      body: JSON.stringify({ step: "script-begin" })
+    });
+  } catch (e) {}
+
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = { "X-ForgeAgent-Token": TOKEN };
+    var body = null;
+    if (opts.body) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(opts.body);
+    }
+    return fetch(path, {
+      method: opts.method || "GET",
+      headers: headers,
+      body: body,
+      cache: "no-store"
+    }).then(function (r) {
+      if (!r.ok) throw new Error(path + " -> HTTP " + r.status);
+      return r.json();
+    });
+  }
+
+  // 后端是 Python 先起来的，理论上页面一加载就该通；
+  // 但还是确认一下，免得服务没起来时界面一片死寂不给任何提示。
+  function whenServerReady(onReady, onTimeout) {
+    var tries = 0;
+    (function probe() {
+      api("/api/hello").then(
+        function () { onReady(); },
+        function () {
+          if (++tries > 60) onTimeout();          // 30 秒还连不上
+          else setTimeout(probe, 500);
+        }
+      );
+    })();
   }
 
   // ---- 工具 ----
@@ -230,6 +286,48 @@
     statusText.textContent = text;
   }
 
+  // ---- 自报状态 ----
+  //
+  // 为什么要这套：想从外面验证「界面到底渲染出来没有」，
+  // 最直觉的办法是 Python 调 window.evaluate_js() 读 DOM —— 但在 EdgeChromium
+  // 后端上它会死锁（pywebview 在 continuation 里 json.loads 失败就不放信号量，
+  // semaphore.acquire() 永远等不到）。所以反过来：界面自己把 DOM 摘要推给
+  // Python，走的还是 JS -> Python 这条本来就安全的通道。
+  // scripts/gui_smoke.py 靠它区分「JS 没跑」和「跑了但后端没通」。
+  function domStats() {
+    var bs = document.querySelectorAll("#messages .bubble");
+    var n = { u: 0, a: 0, t: 0, e: 0 };
+    var user = "", assistant = "", error = "";
+    for (var i = 0; i < bs.length; i++) {
+      var c = bs[i].classList, t = bs[i].textContent;
+      if (c.contains("user")) { n.u++; user = t; }
+      else if (c.contains("assistant")) { n.a++; assistant = t; }
+      else if (c.contains("thought")) { n.t++; }
+      else if (c.contains("error")) { n.e++; error = t; }
+    }
+    return {
+      bridge: document.body.dataset.bridge || "",
+      status: statusText.textContent,
+      count: n, user: user, assistant: assistant, error: error
+    };
+  }
+
+  function report() {
+    if (!started) return;
+    api("/api/state", { method: "POST", body: domStats() }).catch(function () {});
+  }
+
+  // Python 下发的动作（跟着 /api/events 同一趟捎回来）
+  function runCommand(cmd) {
+    if (!cmd) return;
+    if (cmd.action === "send") {
+      input.value = cmd.text || "";
+      submit();
+    } else if (cmd.action === "report") {
+      report();
+    }
+  }
+
   function newBubble(role, label) {
     var el = document.createElement("div");
     el.className = "bubble " + role;
@@ -257,6 +355,11 @@
   // ---- 事件处理 ----
 
   function handle(ev) {
+    if (ev.type === "command") {
+      runCommand(ev.cmd);
+      return;
+    }
+
     if (ev.type === "status") {
       setStatus(ev.state, ev.message);
       if (ev.state === "error" && ev.log && ev.log.length) {
@@ -274,6 +377,7 @@
       busy = true;
       sendBtn.disabled = true;
       setStatus("connecting", "生成中…");
+      report();
       return;
     }
 
@@ -297,12 +401,13 @@
       sendBtn.disabled = false;
       setStatus("ready", ev.error ? "出错了（看日志）" : ("stop=" + (ev.stop || "?")));
       input.focus();
+      report();
       return;
     }
   }
 
-  // ---- 长轮询：await 一个「阻塞到有事件才返回」的 Python 方法 ----
-  // 比定时轮询实时、比 Python 主动 evaluate_js 安全（不碰跨线程 UI 调用）。
+  // ---- 长轮询：await 一个「阻塞到有事件才返回」的接口 ----
+  // 比定时轮询实时，又不用 Python 反过来推（那得碰跨线程 UI 调用，不稳）。
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
@@ -310,7 +415,8 @@
     while (true) {
       var evs = null;
       try {
-        evs = await pywebview.api.next_events(2.0);
+        var res = await api("/api/events?timeout=2");
+        evs = res.events;
       } catch (e) {
         await sleep(500);
         continue;
@@ -326,12 +432,16 @@
   // ---- 输入 ----
 
   function submit() {
-    if (busy) return;
+    if (busy || !started) return;
     var text = input.value.trim();
     if (!text) return;
     input.value = "";
     autoSize();
-    pywebview.api.send(text);
+    api("/api/send", { method: "POST", body: { text: text } }).catch(function (e) {
+      current = newBubble("error", "发送失败");
+      appendText(current, String(e && e.message ? e.message : e));
+      current = null;
+    });
   }
 
   function autoSize() {
@@ -359,8 +469,10 @@
   // ---- 日志面板 ----
 
   async function refreshLog() {
+    if (!started) return;
     try {
-      var lines = await pywebview.api.stderr_tail(300);
+      var res = await api("/api/stderr?n=300");
+      var lines = res.lines || [];
       logBody.textContent = lines.length ? lines.join("\n") : "(agent 暂无日志输出)";
     } catch (e) {
       logBody.textContent = "读取日志失败：" + e;
@@ -383,8 +495,45 @@
   document.getElementById("log-close").addEventListener("click", toggleLog);
 
   autoSize();
-  input.focus();
-  pump();
+  setStatus("connecting", "连接后端…");
+
+  // body.dataset.bridge 是给 scripts/gui_smoke.py 看的外部可观测标记：
+  // 冒烟测试要能区分「JS 压根没跑」和「跑起来了但后端没通」。
+  // 全局错误上报：界面炸了也得让外面看见。
+  // 冒烟测试靠它区分「JS 压根没跑」和「跑了但某一步抛异常」。
+  function reportFatal(where, e) {
+    try {
+      api("/api/state", {
+        method: "POST",
+        body: { js_error: where + ": " + String((e && e.message) || e) }
+      });
+    } catch (_) { /* 上报失败就没辙了 */ }
+  }
+  window.addEventListener("error", function (e) {
+    reportFatal("error@" + (e.filename || "?") + ":" + (e.lineno || "?"), e.message || e.error);
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    reportFatal("unhandledrejection", e.reason);
+  });
+
+  whenServerReady(
+    function () {
+      started = true;
+      document.body.dataset.bridge = "ready";
+      report();               // 先自报，再干活 —— 这样即使后面炸了也知道跑到哪了
+      try {
+        autoSize();
+        input.focus();
+      } catch (e) {
+        reportFatal("bootstrap", e);
+      }
+      pump();
+    },
+    function () {
+      document.body.dataset.bridge = "timeout";
+      setStatus("error", "连不上本机服务（请用 forgeagent-gui 启动，别直接双击打开 html）");
+    }
+  );
 })();
 </script>
 </body>

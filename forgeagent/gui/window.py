@@ -1,6 +1,10 @@
 """pywebview 窗口层。
 
-只有这个文件 import webview —— bridge 层因此能脱离 GUI 单独测试。
+只有这个文件 import webview —— server / bridge 层因此能脱离 GUI 单独测试。
+
+职责很薄：起一个本机 UI 服务（server.py），把它的 URL 交给 pywebview 开个窗口，
+关窗时把 agentd 子进程带走。页面跟 Python 之间走 HTTP，**不用 pywebview 的
+js_api** —— 原因见 server.py 模块注释。
 
 跨平台说明（pywebview 三平台用的都是系统自带 WebView，不打包浏览器）：
     Windows  Edge WebView2。Win11 自带；Win10 需要装 Evergreen Runtime。
@@ -10,12 +14,10 @@
 
 from __future__ import annotations
 
+import os
 import sys
-from pathlib import Path
 
-from .bridge import Bridge
-
-ASSETS = Path(__file__).parent / "assets"
+from .server import UiServer
 
 _LINUX_HINT = """\
 Linux 上启动 GUI 失败，通常是缺 WebKitGTK / PyGObject。按发行版装：
@@ -39,28 +41,6 @@ https://developer.microsoft.com/microsoft-edge/webview2/
 """
 
 
-class Api:
-    """暴露给 JS 的接口，方法名直接就是 JS 里的 pywebview.api.xxx。
-
-    刻意薄：只做转发，不含任何业务逻辑 —— 业务逻辑在 bridge.py 里，可单测。
-    """
-
-    def __init__(self, bridge: Bridge) -> None:
-        self._bridge = bridge
-
-    def start(self) -> dict:
-        return self._bridge.start()
-
-    def send(self, text: str) -> dict:
-        return self._bridge.send(text)
-
-    def next_events(self, timeout: float = 2.0) -> list[dict]:
-        return self._bridge.next_events(timeout)
-
-    def stderr_tail(self, n: int = 100) -> list[str]:
-        return self._bridge.stderr_tail(n)
-
-
 def _platform_hint() -> str:
     if sys.platform == "linux":
         return _LINUX_HINT
@@ -78,43 +58,30 @@ def launch(
     command: list[str] | None = None,
     debug: bool = False,
 ) -> None:
-    """打开一个独立的 GUI 窗口。"""
+    """打开一个独立的 GUI 窗口（阻塞到窗口关闭）。"""
     try:
         import webview
     except ImportError as exc:
-        raise SystemExit(
-            "没装 pywebview。装一下：pip install -e '.[gui]'"
-        ) from exc
+        raise SystemExit("没装 pywebview。装一下：pip install -e '.[gui]'") from exc
 
-    import os
+    server = UiServer(cwd=cwd, command=command).start()
+    print(f"[forgeagent] 本机 UI 服务: http://127.0.0.1:{server.port}/")
 
-    bridge = Bridge(cwd=cwd, command=command)
-    api = Api(bridge)
-
-    # Path.as_uri() 三平台都能生成合法 file:// URL（Windows 上是 file:///D:/...）
-    url = (ASSETS / "index.html").as_uri()
     window = webview.create_window(
         title,
-        url=url,
-        js_api=api,
+        url=server.url,
         width=width,
         height=height,
         min_size=(640, 420),
     )
 
-    def _bootstrap() -> None:
-        # 窗口已经出来了再连 agentd —— 否则启动那 1 秒是白屏
-        api.start()
-
-    def _on_closed() -> None:
-        # 务必带走 agentd 子进程，否则关窗后会漏一个 python 进程
-        bridge.close()
-
-    window.events.closed += _on_closed
+    # 关窗务必带走 agentd 子进程，否则会漏一个 python 进程在后台
+    window.events.closed += server.stop
 
     gui = os.environ.get("FORGEAGENT_GUI") or None  # 允许强制指定后端：qt / gtk / cef
     try:
-        webview.start(func=_bootstrap, args=(), debug=debug, gui=gui)
+        # 窗口先出来，再去连 agentd —— 否则启动那一秒是白屏
+        webview.start(func=server.start_agent, args=(), debug=debug, gui=gui)
     except Exception as exc:  # noqa: BLE001 - 启动失败要给人话，不是 traceback
-        bridge.close()
+        server.stop()
         raise SystemExit(f"GUI 启动失败：{type(exc).__name__}: {exc}\n\n{_platform_hint()}")

@@ -45,6 +45,8 @@ class Bridge:
         # 不用真起 agentd 子进程。
         self._client = client if client is not None else AcpClient(command=command, cwd=cwd)
         self._events: queue.Queue[dict] = queue.Queue()
+        self._commands: queue.Queue[dict] = queue.Queue()  # Python -> JS
+        self._ui: dict = {}  # JS -> Python：界面自报的状态，外部可观测
         self._busy = False
         self._closed = threading.Event()
 
@@ -105,9 +107,16 @@ class Bridge:
         return {"ok": True}
 
     def next_events(self, timeout: float = DEFAULT_POLL_TIMEOUT) -> list[dict]:
-        """阻塞到有事件可取，超时返回空列表。JS 端循环 await 这个方法。"""
+        """阻塞到有事件可取，超时返回空列表。JS 端循环 await 这个方法。
+
+        顺带一趟把待办命令捎回去（`{"type": "command", "cmd": ...}`）——
+        省掉一次额外往返，也让「Python 让界面干点什么」走的是同一条安全通道。
+        """
         if self._closed.is_set():
             return []
+        out = self._drain_commands()
+        if out:
+            return out
         try:
             first = self._events.get(timeout=timeout)
         except queue.Empty:
@@ -116,6 +125,36 @@ class Bridge:
         while len(out) < _MAX_BATCH:
             try:
                 out.append(self._events.get_nowait())
+            except queue.Empty:
+                break
+        out.extend(self._drain_commands(_MAX_BATCH - len(out)))
+        return out
+
+    # ---- 反向通道：Python 让界面干活 / 界面自报状态 ----
+
+    def push_command(self, cmd: dict) -> None:
+        """让界面执行一个动作（如 {"action": "send", "text": "..."}）。
+
+        不用 evaluate_js 推，原因同本文件开头：跨线程 UI 调用在 EdgeChromium
+        上会死锁。命令排队，等 JS 下一次轮询取走。
+        """
+        if isinstance(cmd, dict):
+            self._commands.put(cmd)
+
+    def ui_report(self, state: dict) -> dict:
+        """界面自报状态。外部（含冒烟测试）用 ui_state() 读。"""
+        if isinstance(state, dict):
+            self._ui.update(state)
+        return {"ok": True}
+
+    def ui_state(self) -> dict:
+        return dict(self._ui)
+
+    def _drain_commands(self, limit: int = _MAX_BATCH) -> list[dict]:
+        out: list[dict] = []
+        while len(out) < limit:
+            try:
+                out.append({"type": "command", "cmd": self._commands.get_nowait()})
             except queue.Empty:
                 break
         return out
