@@ -26,6 +26,7 @@ import asyncio
 import json
 import os
 import shlex
+import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +47,13 @@ class AcpError(RuntimeError):
     """agentd 返回 JSON-RPC error，或连接异常关闭。"""
 
 
+# agentd 用 thought 通道送错误（ACP 的 stop_reason 只有五种，没有 error，
+# 见 agentd/agentd/transports/acp_stdio.py 的 _STOP_REASON_MAP），
+# 拿这个前缀标记。两个仓库各自定义同一个字面量——这里改了那边也要改，
+# 否则最坏情况只是错误退化成普通思考文本显示，不会崩。
+ERROR_MARK = "[错误]"
+
+
 @dataclass
 class Turn:
     """一轮对话 reduce 出来的稳定状态。
@@ -56,9 +64,9 @@ class Turn:
 
     user: str = ""
     text: str = ""
-    thought: str = ""  # 思考/错误通道，ACP 里客户端通常暗色渲染
+    thought: str = ""  # 思考通道，ACP 里客户端通常暗色渲染
     stop_reason: str = ""
-    error: str = ""
+    error: str = ""  # 从 thought 通道里识别出来的错误，见 ERROR_MARK
     unknown: list[str] = field(default_factory=list)  # 未识别的事件类型，调试用
 
     @property
@@ -120,8 +128,12 @@ class AcpClient:
         env: dict[str, str] | None = None,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
-        # 默认命令可用环境变量覆盖，方便接别的 agent 或换 Python 解释器
-        raw = os.environ.get("FORGEAGENT_AGENT_CMD", "python -m agentd.server")
+        # 默认用 sys.executable 而不是 "python"：
+        # forgeagent 和 agentd 装在同一个 venv 里时，PATH 上的 python 未必是那一个。
+        # 写成 "python" 的话，用 pip 装的 forgeagent 脚本一跑就"agent 起不来"，
+        # 而报错只是 FileNotFoundError / ModuleNotFoundError，很难联想到是解释器错了。
+        default_cmd = f'"{sys.executable}" -m agentd.server'
+        raw = os.environ.get("FORGEAGENT_AGENT_CMD", default_cmd)
         self._command = command if command is not None else shlex.split(raw)
         self._cwd = cwd or os.environ.get("FORGEAGENT_CWD") or os.getcwd()
         self._env = env
@@ -316,7 +328,14 @@ class AcpClient:
             return
 
         if kind == "agent_thought_chunk":
-            turn.thought += chunk
+            # 错误是借 thought 通道过来的（见 ERROR_MARK）。识别出来单独放，
+            # 这样 UI 能用红色渲染，而不是混在"思考"里让人以为模型在自言自语。
+            # turn.error 非空后再来的内容继续当错误正文——错误可能被拆成多个 chunk。
+            if chunk.startswith(ERROR_MARK) or turn.error:
+                body = chunk[len(ERROR_MARK):].lstrip() if chunk.startswith(ERROR_MARK) else chunk
+                turn.error += body
+            else:
+                turn.thought += chunk
         elif kind in ("agent_message_chunk", ""):
             # 空 kind 兜底：SDK 各版本字段名有出入，宁可当正文也别丢字
             turn.text += chunk

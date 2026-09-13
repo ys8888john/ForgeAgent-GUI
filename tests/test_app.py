@@ -51,3 +51,46 @@ async def test_toggle_log_does_not_crash():
         await pilot.press("ctrl+l")
         await pilot.pause()
         assert app._show_log is not before
+
+
+async def test_markup_brackets_are_not_swallowed():
+    """LLM 输出里的 [xxx] 不能消失。
+
+    Textual 的 Static 默认 markup=True，会把 `[DONE]` 这种解析成样式标签——
+    实测结果是整段从界面上消失，既不报错也不留痕。
+    LLM 很爱输出方括号（数组、Markdown 链接、[DONE] 标记），所以必须钉死。
+    """
+    app = ForgeAgentApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._history.append(("text", "结果 [DONE]，数组 [[1,2],[3,4]]"))
+        app._redraw()
+        await pilot.pause()
+        shown = app.query_one("#log", Static).render()
+        plain = shown.plain if hasattr(shown, "plain") else str(shown)
+        assert "[DONE]" in plain
+        assert "[[1,2],[3,4]]" in plain
+
+
+async def test_error_is_rendered_and_distinguishable():
+    """错误要进历史，并且带 error 角色（UI 据此标红）。"""
+    app = ForgeAgentApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._history.append(("error", "Ollama HTTP 404：model not found"))
+        app._redraw()
+        await pilot.pause()
+        assert any(role == "error" for role, _ in app._history)
+
+
+async def test_empty_turn_leaves_a_trace():
+    """一轮下来什么都没有时，不能静默什么都不显示。"""
+    from forgeagent.acp_client import Turn
+
+    app = ForgeAgentApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._turn = Turn()
+        app._commit_turn()
+        assert app._history[-1][0] == "error"
+        assert app._turn is None

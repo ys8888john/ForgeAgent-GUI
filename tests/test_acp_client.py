@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from forgeagent.acp_client import AcpClient, Turn, _collect_text
+from forgeagent.acp_client import ERROR_MARK, AcpClient, Turn, _collect_text
 
 
 def _notify(kind: str, text: str) -> dict:
@@ -93,3 +93,42 @@ def test_turn_is_running_until_stopped():
 def test_turn_error_stops_running():
     turn = Turn(error="连接断了")
     assert turn.running is False
+
+
+# ---- 错误识别 ----
+#
+# ACP 的 stop_reason 只有 end_turn/max_tokens/max_turn_requests/refusal/cancelled
+# 五种，没有 error。agentd 只好把错误塞 thought 通道 + 打上 [错误] 前缀。
+# 这里验证前端能把它认出来，并且不再当成"思考"显示。
+
+def test_error_marker_is_split_out_of_thought():
+    client, turn = AcpClient(), Turn()
+    client._apply_update(turn, _notify("agent_thought_chunk", ERROR_MARK + " 模型不存在"))
+    assert turn.error == "模型不存在"
+    assert turn.thought == ""
+    assert turn.running is False
+
+
+def test_normal_thought_is_not_treated_as_error():
+    client, turn = AcpClient(), Turn()
+    client._apply_update(turn, _notify("agent_thought_chunk", "让我想想"))
+    assert turn.thought == "让我想想"
+    assert turn.error == ""
+
+
+def test_split_error_chunks_all_go_to_error():
+    """错误被拆成多个 chunk 时，后续 chunk 不能掉回 thought。"""
+    client, turn = AcpClient(), Turn()
+    client._apply_update(turn, _notify("agent_thought_chunk", ERROR_MARK + " Ollama HTTP 404："))
+    client._apply_update(turn, _notify("agent_thought_chunk", "model not found"))
+    assert turn.error == "Ollama HTTP 404：model not found"
+    assert turn.thought == ""
+
+
+def test_error_and_text_can_coexist():
+    """先出错、后又有正文的情况（比如降级回复），两个都不能丢。"""
+    client, turn = AcpClient(), Turn()
+    client._apply_update(turn, _notify("agent_thought_chunk", ERROR_MARK + " boom"))
+    client._apply_update(turn, _notify("agent_message_chunk", "仍然可用的回复"))
+    assert turn.error == "boom"
+    assert turn.text == "仍然可用的回复"
