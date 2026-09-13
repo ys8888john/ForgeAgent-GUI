@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "forgeagent-tui"
 version = "0.1.0"
-description = "Textual TUI client for ACP agents (agentd)"
+description = "Terminal and desktop GUI client for ACP agents (agentd)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,13 +15,20 @@ dependencies = [
 [project.optional-dependencies]
 # 可选：装上后客户端会用它的方法名常量表，不装则退回硬编码字面量，功能不受影响
 acp = ["agent-client-protocol>=0.12.1"]
+# GUI 需要。pywebview 用的是系统自带 WebView，不打包浏览器，所以体积很小。
+# Linux 上还需要系统包：WebKitGTK + PyGObject，见 README 的跨平台一节。
+gui = ["pywebview>=5.0"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [project.scripts]
 forgeagent = "forgeagent.__main__:main"
+forgeagent-gui = "forgeagent.gui.__main__:main"
 
 [tool.setuptools]
-packages = ["forgeagent"]
+packages = ["forgeagent", "forgeagent.gui"]
+
+[tool.setuptools.package-data]
+"forgeagent.gui" = ["assets/*.html", "assets/*.css", "assets/*.js"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -132,9 +132,17 @@ class AcpClient:
         # forgeagent 和 agentd 装在同一个 venv 里时，PATH 上的 python 未必是那一个。
         # 写成 "python" 的话，用 pip 装的 forgeagent 脚本一跑就"agent 起不来"，
         # 而报错只是 FileNotFoundError / ModuleNotFoundError，很难联想到是解释器错了。
-        default_cmd = f'"{sys.executable}" -m agentd.server'
-        raw = os.environ.get("FORGEAGENT_AGENT_CMD", default_cmd)
-        self._command = command if command is not None else shlex.split(raw)
+        if command is not None:
+            self._command = command
+        elif raw := os.environ.get("FORGEAGENT_AGENT_CMD"):
+            # posix 模式要显式指定：shlex 默认按 POSIX 规则转义，而 Windows 路径
+            # 里的反斜杠在 POSIX 规则下是转义符（虽然只在 $ ` " \ 换行 前生效，
+            # 但依赖这个细节太脆）。Linux/macOS 用 posix=True，Windows 用 False。
+            self._command = shlex.split(raw, posix=(os.sep == "/"))
+        else:
+            # 默认值直接给 list，不走「拼字符串再切分」这道手续 ——
+            # 跨平台时那道手续是主要的踩坑来源（引号、反斜杠、空格路径）。
+            self._command = [sys.executable, "-m", "agentd.server"]
         self._cwd = cwd or os.environ.get("FORGEAGENT_CWD") or os.getcwd()
         self._env = env
         self._timeout = timeout

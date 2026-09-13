@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ForgeAgent</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #f6f7f9;
+    --border: #e3e5e8;
+    --text: #1f2124;
+    --text-dim: #6b7280;
+    --user-bg: #e8f0fe;
+    --user-border: #c6dafc;
+    --accent: #2563eb;
+    --danger: #b42318;
+    --danger-bg: #fef3f2;
+    --code-bg: #f4f5f7;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+            "Helvetica Neue", Arial, "Microsoft YaHei", "PingFang SC", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas,
+            "Liberation Mono", "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.65;
+    color: var(--text);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-soft);
+    flex: 0 0 auto;
+  }
+  header h1 { font-size: 14px; font-weight: 600; margin: 0; }
+  #status { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 12px; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: #c4c8ce; flex: 0 0 auto; }
+  #dot.ready { background: #17a673; }
+  #dot.error { background: var(--danger); }
+  #dot.connecting { background: #e5a50a; }
+  header .spacer { flex: 1; }
+  button {
+    font-family: inherit; font-size: 12px; color: var(--text-dim);
+    background: transparent; border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer;
+  }
+  button:hover { background: #eceef1; }
+
+  #messages {
+    flex: 1 1 auto; overflow-y: auto;
+    padding: 20px 16px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .bubble { max-width: 82%; padding: 10px 14px; border-radius: 12px; white-space: normal; }
+  .bubble.user {
+    align-self: flex-end; background: var(--user-bg);
+    border: 1px solid var(--user-border); border-bottom-right-radius: 4px;
+  }
+  .bubble.assistant {
+    align-self: flex-start; background: var(--bg-soft);
+    border: 1px solid var(--border); border-bottom-left-radius: 4px;
+  }
+  .bubble.thought {
+    align-self: flex-start; background: transparent; border: 1px dashed var(--border);
+    color: var(--text-dim); font-size: 13px;
+  }
+  .bubble.error {
+    align-self: flex-start; background: var(--danger-bg);
+    border: 1px solid #fda29b; color: var(--danger);
+  }
+  .bubble .label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+
+  .bubble p { margin: 0 0 8px; }
+  .bubble p:last-child { margin-bottom: 0; }
+  .bubble ul, .bubble ol { margin: 0 0 8px; padding-left: 22px; }
+  .bubble li { margin: 2px 0; }
+  .bubble h1, .bubble h2, .bubble h3 { margin: 12px 0 6px; font-size: 14px; font-weight: 600; }
+  .bubble h1 { font-size: 16px; }
+  code {
+    font-family: var(--mono); font-size: 12.5px;
+    background: var(--code-bg); border-radius: 4px; padding: 1px 5px;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; overflow-x: auto; margin: 8px 0;
+  }
+  pre code { background: transparent; padding: 0; font-size: 12.5px; }
+  .caret {
+    display: inline-block; width: 6px; height: 14px;
+    background: var(--text-dim); vertical-align: -2px; margin-left: 2px;
+    animation: blink 1s steps(2, start) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  #composer {
+    flex: 0 0 auto; border-top: 1px solid var(--border);
+    padding: 10px 16px; display: flex; gap: 8px; align-items: flex-end;
+    background: var(--bg-soft);
+  }
+  #input {
+    flex: 1; font-family: inherit; font-size: 14px; line-height: 1.5;
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+    resize: none; max-height: 160px; background: var(--bg); color: var(--text);
+  }
+  #send {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+    font-size: 13px; padding: 8px 18px;
+  }
+  #send:disabled { background: #c4c8ce; border-color: #c4c8ce; cursor: not-allowed; }
+  .hint { font-size: 11px; color: var(--text-dim); padding: 0 16px 8px; background: var(--bg-soft); }
+
+  #log-pane {
+    display: none; position: absolute; left: 0; right: 0; bottom: 0; top: 0;
+    background: #1f2124; color: #d6d8db; padding: 16px; overflow-y: auto;
+    font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
+  }
+  #log-pane.show { display: block; }
+  #log-pane .bar { margin-bottom: 10px; }
+  #log-pane button { color: #d6d8db; border-color: #4a4d52; }
+  #log-pane button:hover { background: #2f3237; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ForgeAgent</h1>
+  <span id="status"><span id="dot"></span><span id="status-text">启动中…</span></span>
+  <span class="spacer"></span>
+  <button id="log-btn">agent 日志</button>
+</header>
+
+<div id="messages"></div>
+
+<div id="composer">
+  <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+  <button id="send">发送</button>
+</div>
+<div class="hint">Ctrl/Cmd + L 看日志　·　Ctrl/Cmd + Enter 发送</div>
+
+<div id="log-pane">
+  <div class="bar"><button id="log-close">关闭</button></div>
+  <div id="log-body"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var messages = document.getElementById("messages");
+  var input = document.getElementById("input");
+  var sendBtn = document.getElementById("send");
+  var dot = document.getElementById("dot");
+  var statusText = document.getElementById("status-text");
+  var logPane = document.getElementById("log-pane");
+  var logBody = document.getElementById("log-body");
+
+  var busy = false;
+  var current = null;      // 当前正在流式输出的 bubble
+  var autoScroll = true;
+  var logTimer = null;
+
+  if (typeof pywebview === "undefined") {
+    setStatus("error", "不是通过 pywebview 打开的，无法连接后端");
+    input.disabled = true;
+    sendBtn.disabled = true;
+    return;
+  }
+
+  // ---- 工具 ----
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // 极简 Markdown：够用、无依赖、离线可用。
+  // 顺序有讲究：先转义 HTML（防注入），再处理围栏代码块（内部不再做行内替换）。
+  function renderMd(src) {
+    var s = escapeHtml(src);
+    var blocks = [];
+    s = s.replace(/```([a-zA-Z0-9]*)\n?([\s\S]*?)```/g, function (m, lang, code) {
+      blocks.push(code.replace(/\n$/, ""));
+      return "\u0000BLOCK" + (blocks.length - 1) + "\u0000";
+    });
+    s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    s = s.replace(/^### (.*)$/gm, "<h3>$1</h3>");
+    s = s.replace(/^## (.*)$/gm, "<h2>$1</h2>");
+    s = s.replace(/^# (.*)$/gm, "<h1>$1</h1>");
+    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    s = s.replace(/^\s*[-*+] +(.*)$/gm, "<li>$1</li>");
+    s = s.replace(/(<li>[\s\S]*?<\/li>)(?![\s\S]*?<li>)/g, function (m) {
+      return "<ul>" + m + "</ul>";
+    });
+    s = s.split(/\n{2,}/).map(function (chunk) {
+      chunk = chunk.trim();
+      if (!chunk) return "";
+      if (/^<(h[1-3]|ul|li|pre)/.test(chunk)) return chunk;
+      return "<p>" + chunk.replace(/\n/g, "<br>") + "</p>";
+    }).join("");
+    s = s.replace(/\u0000BLOCK(\d+)\u0000/g, function (m, i) {
+      return "<pre><code>" + blocks[Number(i)] + "</code></pre>";
+    });
+    return s;
+  }
+
+  function atBottom() {
+    return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
+  }
+
+  function scrollToBottom() {
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  messages.addEventListener("scroll", function () { autoScroll = atBottom(); });
+
+  function setStatus(state, text) {
+    dot.className = state;
+    statusText.textContent = text;
+  }
+
+  function newBubble(role, label) {
+    var el = document.createElement("div");
+    el.className = "bubble " + role;
+    el.dataset.raw = "";
+    if (label) {
+      var lab = document.createElement("div");
+      lab.className = "label";
+      lab.textContent = label;
+      el.appendChild(lab);
+      el._body = document.createElement("div");
+      el.appendChild(el._body);
+    } else {
+      el._body = el;
+    }
+    messages.appendChild(el);
+    return el;
+  }
+
+  function appendText(el, text) {
+    el.dataset.raw += text;
+    el._body.innerHTML = renderMd(el.dataset.raw);
+    if (autoScroll) scrollToBottom();
+  }
+
+  // ---- 事件处理 ----
+
+  function handle(ev) {
+    if (ev.type === "status") {
+      setStatus(ev.state, ev.message);
+      if (ev.state === "error" && ev.log && ev.log.length) {
+        current = newBubble("error", "启动失败");
+        appendText(current, ev.message + "\n\n" + ev.log.join("\n"));
+        current = null;
+      }
+      return;
+    }
+
+    if (ev.type === "user") {
+      var b = newBubble("user");
+      b.textContent = ev.text;
+      if (autoScroll) scrollToBottom();
+      busy = true;
+      sendBtn.disabled = true;
+      setStatus("connecting", "生成中…");
+      return;
+    }
+
+    if (ev.type === "delta") {
+      // 换角色就换一个气泡：正文 / 思考 / 错误分开显示，别糊在一起
+      var want = ev.role;
+      if (!current || current.dataset.role !== want) {
+        current = newBubble(want, want === "thought" ? "思考" : (want === "error" ? "错误" : null));
+        current.dataset.role = want;
+      }
+      appendText(current, ev.text);
+      return;
+    }
+
+    if (ev.type === "done") {
+      if (current) {
+        current.dataset.raw = current.dataset.raw; // 保持不变
+        current = null;
+      }
+      busy = false;
+      sendBtn.disabled = false;
+      setStatus("ready", ev.error ? "出错了（看日志）" : ("stop=" + (ev.stop || "?")));
+      input.focus();
+      return;
+    }
+  }
+
+  // ---- 长轮询：await 一个「阻塞到有事件才返回」的 Python 方法 ----
+  // 比定时轮询实时、比 Python 主动 evaluate_js 安全（不碰跨线程 UI 调用）。
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  async function pump() {
+    while (true) {
+      var evs = null;
+      try {
+        evs = await pywebview.api.next_events(2.0);
+      } catch (e) {
+        await sleep(500);
+        continue;
+      }
+      if (!evs || !evs.length) continue;
+      var stick = autoScroll;
+      for (var i = 0; i < evs.length; i++) handle(evs[i]);
+      autoScroll = stick || atBottom();
+      if (autoScroll) scrollToBottom();
+    }
+  }
+
+  // ---- 输入 ----
+
+  function submit() {
+    if (busy) return;
+    var text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    autoSize();
+    pywebview.api.send(text);
+  }
+
+  function autoSize() {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 160) + "px";
+  }
+
+  input.addEventListener("input", autoSize);
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      submit();
+    }
+  });
+  document.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); submit(); }
+    if ((e.ctrlKey || e.metaKey) && (e.key === "l" || e.key === "L")) {
+      e.preventDefault();
+      toggleLog();
+    }
+    if (e.key === "Escape" && logPane.classList.contains("show")) toggleLog();
+  });
+  sendBtn.addEventListener("click", submit);
+
+  // ---- 日志面板 ----
+
+  async function refreshLog() {
+    try {
+      var lines = await pywebview.api.stderr_tail(300);
+      logBody.textContent = lines.length ? lines.join("\n") : "(agent 暂无日志输出)";
+    } catch (e) {
+      logBody.textContent = "读取日志失败：" + e;
+    }
+  }
+
+  function toggleLog() {
+    var show = !logPane.classList.contains("show");
+    logPane.classList.toggle("show", show);
+    if (show) {
+      refreshLog();
+      logTimer = setInterval(refreshLog, 1500);
+    } else if (logTimer) {
+      clearInterval(logTimer);
+      logTimer = null;
+    }
+  }
+
+  document.getElementById("log-btn").addEventListener("click", toggleLog);
+  document.getElementById("log-close").addEventListener("click", toggleLog);
+
+  autoSize();
+  input.focus();
+  pump();
+})();
+</script>
+</body>
+</html>
