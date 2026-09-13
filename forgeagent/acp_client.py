@@ -100,10 +100,13 @@ def _method(table: Any, keys: tuple[str, ...], fallback: str) -> str:
     return fallback
 
 
+# SDK 常量表的 key 是 python 风格全名（session_new / session_prompt / session_cancel）。
+# 曾经写成 "new_session" / "prompt" 导致 KeyError —— 所以这里正名优先、
+# 旧写法兜底、最后还有字面量，三层保险。
 M_INIT = _method(AGENT_METHODS, ("initialize",), "initialize")
-M_NEW = _method(AGENT_METHODS, ("new_session",), "session/new")
-M_PROMPT = _method(AGENT_METHODS, ("prompt",), "session/prompt")
-M_CANCEL = _method(AGENT_METHODS, ("cancel",), "session/cancel")
+M_NEW = _method(AGENT_METHODS, ("session_new", "new_session"), "session/new")
+M_PROMPT = _method(AGENT_METHODS, ("session_prompt", "prompt"), "session/prompt")
+M_CANCEL = _method(AGENT_METHODS, ("session_cancel", "cancel"), "session/cancel")
 M_UPDATE = _method(CLIENT_METHODS, ("session_update",), "session/update")
 
 
