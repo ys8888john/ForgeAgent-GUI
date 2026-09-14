@@ -17,6 +17,12 @@
    正确做法是先 reduce 成一个稳定状态，UI 只渲染这个状态。
    这个思路是从 Panda 的 README 学来的，是这类客户端的关键设计。
 
+4. **必须实现反向请求（session/request_permission）。**
+   ACP 不是"客户端只发命令"的单向协议：agent 会反过来请求客户端
+   （审批、读文件、开终端）。这些是**请求**，每个都必须回一帧，不回对方就永久
+   阻塞。所以 `_read_stdout` 按"有没有 method 字段"分流，而不是按 id ——
+   两个方向各自编号，id 必然撞车。见 `_handle_incoming` 的注释。
+
 SDK 是可选的：装了就用它的方法名常量表，没装就退回硬编码字面量，功能不受影响。
 """
 
@@ -41,6 +47,7 @@ except Exception:  # 没装 SDK 也能跑
 
 DEFAULT_TIMEOUT = 300.0  # 一轮生成可能很长，给足
 STDERR_LIMIT = 500  # 环形缓冲上限，防止长时间跑把内存吃满
+PERMISSION_TIMEOUT = 300.0  # 审批等这么久还没人答就按拒绝回帧（见 PermissionRequest）
 
 
 class AcpError(RuntimeError):
@@ -53,6 +60,49 @@ class AcpError(RuntimeError):
 # 否则最坏情况只是错误退化成普通思考文本显示，不会崩。
 ERROR_MARK = "[错误]"
 
+# agentd 在"用户拒绝了这次工具调用"时回灌给模型的固定开头
+# （见 agentd/kernel/modes/agent.py 的 `用户拒绝执行`）。
+#
+# 为什么需要靠文案识别：ACP 的 ToolCallStatus 只有 pending/in_progress/
+# completed/failed，**没有 cancelled**。内核的 cancelled 到了协议层被迫折成
+# failed —— 于是"用户主动拒绝"和"工具真的炸了"在协议上长得一模一样。
+# 我们在这里把它还原回来，界面才能显示成"已取消"（虚线灰边）而不是红色失败：
+# 拒绝是用户的选择，不是故障，不该吓人。
+# 两个仓库各自定义同一个字面量，同 ERROR_MARK 的约定。
+DENY_MARK = "[错误] 用户拒绝"
+
+
+@dataclass
+class PermissionRequest:
+    """agent 发来的审批请求。
+
+    **它是请求不是通知**：JSON-RPC 意义上的请求，带 id，必须回一帧
+    （见 answer_permission）。agentd 那边是 `await conn.request_permission(...)`，
+    我们不回，它就永远卡在那一行 —— 整轮对话静默死住，两边日志都不报错。
+    这也是为什么 _read_stdout 必须靠"有没有 method 字段"区分方向，
+    而不能靠 id：双方各自从 1 开始编号，**id 必然撞车**。
+    """
+
+    request_id: int          # JSON-RPC id，回帧时原样带回
+    session_id: str
+    call_id: str             # toolCall.toolCallId，和工具卡片能对上
+    title: str               # 工具短名，如 run_command
+    kind: str                # read / edit / search / execute / other
+    detail: str              # 人类可读的一行摘要（命令、文件路径…）
+    options: list[dict]      # [{optionId, name, kind}]，由 agent 给，原样呈现
+
+    @property
+    def allow_ids(self) -> list[str]:
+        return [str(o.get("optionId") or "") for o in self.options
+                if str(o.get("kind") or "").startswith("allow")]
+
+    @property
+    def reject_id(self) -> str:
+        for o in self.options:
+            if str(o.get("kind") or "").startswith("reject"):
+                return str(o.get("optionId") or "")
+        return ""
+
 
 @dataclass
 class ToolCallState:
@@ -60,7 +110,10 @@ class ToolCallState:
 
     call_id: str
     title: str = ""
-    kind: str = ""      # read / edit / execute / other
+    # ACP ToolKind：read / edit / delete / move / search / execute /
+    # think / fetch / switch_mode / other。前端只对前几类给专门图标，
+    # 认不出来的原样显示即可 —— 别在客户端做白名单，内核加新 kind 不该让界面瞎。
+    kind: str = ""
     status: str = ""    # pending / in_progress / completed / failed
     output: str = ""
 
@@ -129,6 +182,11 @@ M_NEW = _method(AGENT_METHODS, ("session_new", "new_session"), "session/new")
 M_PROMPT = _method(AGENT_METHODS, ("session_prompt", "prompt"), "session/prompt")
 M_CANCEL = _method(AGENT_METHODS, ("session_cancel", "cancel"), "session/cancel")
 M_UPDATE = _method(CLIENT_METHODS, ("session_update",), "session/update")
+# agent -> client 的审批请求。这个是**反方向**的方法（agent 发起、客户端应答），
+# 但它同样登记在 CLIENT_METHODS 里（"客户端要实现的那些方法"）。
+M_PERMISSION = _method(
+    CLIENT_METHODS, ("session_request_permission",), "session/request_permission"
+)
 
 
 class AcpClient:
@@ -170,6 +228,15 @@ class AcpClient:
         self._pending: dict[int, asyncio.Future[dict]] = {}
         self._notifications: asyncio.Queue[dict] = asyncio.Queue()
 
+        # 待审批的请求：request_id -> Future[optionId]。
+        # 由 _read_stdout 填、answer_permission 解、_settle_permission 回帧。
+        self._permissions: dict[int, asyncio.Future[str]] = {}
+        self._perm_tasks: set[asyncio.Task[Any]] = set()
+        self._permission_timeout = PERMISSION_TIMEOUT
+        # 谁来处理审批请求。bridge 会把它设成"往 UI 事件队列里塞一条 permission 事件"。
+        # 不设 = 没人可问 → 一律按拒绝回帧（fail-closed，绝不能默默放行）。
+        self.on_permission: Any = None
+
         self.session_id = ""
         self.stderr_lines: list[str] = []
 
@@ -204,12 +271,24 @@ class AcpClient:
         单独抽出来是因为 GUI 的「新对话」按钮也要开新会话，但那一步发生在
         initialize 握手之后、用户点了按钮才触发，不能和 start() 绑死。
         """
+        # 切会话前先把旧会话挂着的审批结掉：那个弹窗已经属于上一个会话，
+        # 用户不会再点，不结的话 agentd 里那个 await 永远不返回。
+        stale = await self.cancel_pending_permissions()
+        if stale:
+            self._log(f"[审批] 切会话，作废 {stale} 个未决审批")
         resp = await self._call(M_NEW, {"cwd": self._cwd, "mcpServers": self._mcp_servers})
         self.session_id = resp["result"]["sessionId"]
         return self.session_id
 
     async def close(self) -> None:
         """收摊：停掉后台读取任务，终止子进程。"""
+        # 先结掉待审批的，再停读线程 —— 否则那些 _settle_permission 任务
+        # 会连着 Future 一起被丢掉，永远发不出回帧（虽然进程马上就没了）。
+        await self.cancel_pending_permissions()
+        for task in list(self._perm_tasks):
+            task.cancel()
+        self._perm_tasks.clear()
+
         for task in (self._reader, self._stderr_reader):
             if task is not None:
                 task.cancel()
@@ -280,6 +359,130 @@ class AcpClient:
             return
         await self._call(M_CANCEL, {"sessionId": self.session_id})
 
+    # ---- 审批 ----
+
+    async def answer_permission(self, request_id: int, option_id: str) -> bool:
+        """回答一个审批请求。返回 False 表示这个请求已经不在了（超时/重复点击）。
+
+        只负责"解开等在那儿的 Future"，真正回帧是 _settle_permission 干的 ——
+        这样"_read_stdout 永远不阻塞"这条性质不会被破坏。
+        """
+        fut = self._permissions.get(request_id)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(str(option_id or ""))
+        return True
+
+    async def cancel_pending_permissions(self) -> int:
+        """把所有还挂着的审批按"取消"结掉。
+
+        为什么必须有：会话被切走 / 窗口关了的时候，界面上那个弹窗再也不会有人点，
+        agentd 却还在 await。不主动结掉，那个子进程就带着一个永不完成的请求
+        一直挂着。返回结掉的数量。
+        """
+        count = 0
+        for fut in list(self._permissions.values()):
+            if not fut.done():
+                fut.set_result("")  # 空串 = 没选任何选项 → 回 cancelled
+                count += 1
+        return count
+
+    async def _handle_incoming(self, request_id: int, method: str, params: dict) -> None:
+        """处理 agent 发来的**请求**（必须回一帧，不回就是对方永久阻塞）。
+
+        只认 session/request_permission；其余一律回 -32601。
+        这条"必须回帧"的纪律比具体实现重要：我们还没实现的协议扩展
+        （终端、fs/read_text_file 等）如果静默丢掉，agentd 那边就是一个
+        再也醒不过来的 await。
+        """
+        if method != M_PERMISSION:
+            self._log(f"[agent 请求] 未实现 {method}，已回 -32601")
+            await self._respond_error(request_id, -32601, f"客户端未实现 {method}")
+            return
+
+        tool_call = params.get("toolCall") or params.get("tool_call") or {}
+        raw_input = tool_call.get("rawInput") or tool_call.get("raw_input") or {}
+        detail = ""
+        if isinstance(raw_input, dict):
+            detail = str(raw_input.get("detail") or "")
+        elif raw_input:
+            detail = str(raw_input)
+
+        req = PermissionRequest(
+            request_id=request_id,
+            session_id=str(params.get("sessionId") or params.get("session_id") or ""),
+            call_id=str(tool_call.get("toolCallId") or tool_call.get("tool_call_id") or ""),
+            title=str(tool_call.get("title") or ""),
+            kind=str(tool_call.get("kind") or "other"),
+            detail=detail,
+            options=[o for o in (params.get("options") or []) if isinstance(o, dict)],
+        )
+
+        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._permissions[request_id] = fut
+
+        hook = self.on_permission
+        if hook is None:
+            # 没人可问。绝不能默默放行 —— 那样"审批"就成了摆设。
+            self._log(f"[审批] 没有处理器，按拒绝处理：{req.title}")
+            fut.set_result("")
+        else:
+            try:
+                hook(req)
+            except Exception as exc:  # noqa: BLE001 - 钩子坏了也按拒绝走
+                self._log(f"[审批] 处理器异常，按拒绝处理：{exc}")
+                fut.set_result("")
+
+        # 不在这里 await —— 那会把 _read_stdout 一起卡住，
+        # 后面 agent 再发什么通知（比如工具卡片在转圈）就都读不到了。
+        task = asyncio.ensure_future(self._settle_permission(req, fut))
+        self._perm_tasks.add(task)
+        task.add_done_callback(self._perm_tasks.discard)
+
+    async def _settle_permission(
+        self, req: PermissionRequest, fut: asyncio.Future[str]
+    ) -> None:
+        """等用户选择（或超时），然后把结果回给 agent。"""
+        try:
+            option_id = await asyncio.wait_for(fut, timeout=self._permission_timeout)
+        except asyncio.TimeoutError:
+            self._log(f"[审批] {self._permission_timeout:g}s 无人应答，按拒绝处理：{req.title}")
+            option_id = ""
+        except asyncio.CancelledError:
+            option_id = ""
+            raise
+        finally:
+            self._permissions.pop(req.request_id, None)
+
+        if not option_id:
+            # 空 = 用户没选（关掉了弹窗 / 超时）：ACP 的"没选任何选项"就是 cancelled。
+            # agentd 侧把 cancelled 和 reject 都当拒绝，这里只是把语义表达准确。
+            result: dict = {"outcome": {"outcome": "cancelled"}}
+        else:
+            # 注意：选了"拒绝"那个**选项**，按 ACP 语义是 selected（我们确实给了它一个
+            # optionId），而不是 cancelled。cancelled 专指"压根没选"。
+            result = {"outcome": {"outcome": "selected", "optionId": option_id}}
+        self._log(f"[审批] {req.title} -> {option_id or 'cancelled'}")
+        await self._respond(req.request_id, result)
+
+    async def _respond(self, request_id: int, result: Any) -> None:
+        await self._write_frame({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    async def _respond_error(self, request_id: int, code: int, message: str) -> None:
+        await self._write_frame(
+            {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+        )
+
+    async def _write_frame(self, frame: dict) -> None:
+        if self._proc is None or self._proc.stdin is None:
+            return
+        try:
+            self._proc.stdin.write(json.dumps(frame).encode("utf-8") + b"\n")
+            await self._proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, AttributeError):
+            # agent 已经没了，回帧失败没什么可补救的
+            pass
+
     # ---- 内部 ----
 
     async def _call(self, method: str, params: dict) -> dict:
@@ -312,7 +515,15 @@ class AcpClient:
         return msg
 
     async def _read_stdout(self) -> None:
-        """后台读 stdout：带 id 的认领成响应，不带 id 的当通知入队。"""
+        """后台读 stdout：按**有没有 method 字段**分流，不是按 id。
+
+        踩过的坑（一定要记住）：JSON-RPC 里两个方向各自编号，我们发出去的
+        `session/prompt` 可能是 id=3，agent 发来的审批请求也可能是 id=3。
+        所以"带 id 的就是给我的响应"是错的 —— 这么写会把审批请求当成
+        prompt 的响应，然后 prompt 提前结束、审批永远没人回、agentd 永久挂住。
+        正确的判据是：有 method = 对方发起的（带 id 是请求、不带 id 是通知），
+        没有 method = 对方给我的响应。
+        """
         assert self._proc is not None and self._proc.stdout is not None
         try:
             while True:
@@ -323,10 +534,20 @@ class AcpClient:
                     msg = json.loads(line)
                 except json.JSONDecodeError:
                     # agent 在 stdout 上打了非 JSON —— 协议违规，但别崩，记下来
-                    self.stderr_lines.append(f"[非 JSON stdout] {line[:200]!r}")
+                    self._log(f"[非 JSON stdout] {line[:200]!r}")
                     continue
 
                 rid = msg.get("id")
+                method = msg.get("method")
+
+                if isinstance(method, str):
+                    # 对方发起的东西
+                    if rid is None:
+                        await self._notifications.put(msg)  # 通知：入队给 reducer
+                    else:
+                        await self._handle_incoming(rid, method, msg.get("params") or {})
+                    continue
+
                 fut = self._pending.pop(rid, None) if rid is not None else None
                 if fut is not None and not fut.done():
                     fut.set_result(msg)
@@ -340,6 +561,10 @@ class AcpClient:
                 if not fut.done():
                     fut.set_exception(AcpError("agent 进程已退出"))
             self._pending.clear()
+            # 待审批的也一并结掉：没人会再点那个弹窗了
+            for perm in list(self._permissions.values()):
+                if not perm.done():
+                    perm.set_result("")
 
     async def _read_stderr(self) -> None:
         """后台读 stderr，存进环形缓冲供 UI 查看。"""
@@ -413,3 +638,8 @@ class AcpClient:
             text = _collect_text(update.get("content") or [])
             if text:
                 state.output = text
+
+        # 把"用户拒绝"从 failed 里救回来（见 DENY_MARK 的注释）：
+        # 协议层没有 cancelled 这个状态，只能靠输出文案区分。
+        if state.status == "failed" and DENY_MARK in state.output:
+            state.status = "cancelled"

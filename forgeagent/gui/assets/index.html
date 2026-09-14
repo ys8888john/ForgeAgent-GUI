@@ -150,6 +150,9 @@
   .bubble.tool.done .tool-status { color: #17a673; }
   .bubble.tool.failed .tool-status { color: var(--danger); }
   .bubble.tool.failed { border-color: #fda29b; background: var(--danger-bg); }
+  /* 被拒绝/取消：虚线灰边，和"真的失败了"区分开 —— 那是用户的选择，不是故障 */
+  .bubble.tool.cancelled { border-style: dashed; }
+  .bubble.tool.cancelled .tool-status { color: var(--text-dim); }
   .tool-out {
     margin-top: 6px; background: var(--code-bg); border-radius: 6px;
     padding: 6px 8px; font-family: var(--mono); font-size: 12px;
@@ -205,6 +208,38 @@
   #log-pane .bar { margin-bottom: 10px; }
   #log-pane button { color: #d6d8db; border-color: #4a4d52; }
   #log-pane button:hover { background: #2f3237; }
+
+  /* 审批弹窗：agent 要写文件 / 跑命令时停下来问一次。
+     agentd 那边是真的 await 在等这一帧答案，没有这个弹窗整轮就死在那儿。 */
+  #perm {
+    position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 50;
+    background: rgba(31, 33, 36, .38);
+    display: none; align-items: center; justify-content: center;
+  }
+  #perm.show { display: flex; }
+  .perm-box {
+    width: 92%; max-width: 560px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px; box-shadow: 0 12px 40px rgba(0, 0, 0, .18);
+  }
+  .perm-title { font-weight: 600; font-size: 15px; margin-bottom: 10px; }
+  .perm-row { display: flex; align-items: center; gap: 8px; }
+  .perm-name { font-weight: 600; font-size: 13px; font-family: var(--mono); }
+  .perm-detail {
+    font-family: var(--mono); font-size: 12px; background: var(--code-bg);
+    border-radius: 6px; padding: 8px 10px; margin: 8px 0 14px;
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 200px; overflow: auto;
+  }
+  .perm-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+  .perm-actions button { padding: 6px 14px; font-size: 13px; }
+  .perm-actions button.primary {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+  }
+  .perm-actions button.primary:hover { background: #1d4ed8; }
+  .perm-actions button.warn { color: var(--danger); border-color: #fda29b; }
+  .perm-actions button.warn:hover { background: var(--danger-bg); }
+  .perm-note { font-size: 11px; color: var(--text-dim); margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -240,6 +275,21 @@
       <div id="log-body"></div>
     </div>
   </main>
+</div>
+
+<div id="perm">
+  <div class="perm-box">
+    <div class="perm-title">Agent 请求执行一个操作</div>
+    <div class="perm-row">
+      <span class="perm-name" id="perm-name"></span>
+      <span class="tool-kind" id="perm-kind"></span>
+    </div>
+    <div class="perm-detail" id="perm-detail"></div>
+    <div class="perm-actions" id="perm-actions"></div>
+    <div class="perm-note">
+      选择会原样送回 agentd；关掉弹窗（或按 Esc）等于拒绝，agent 会换条路走。
+    </div>
+  </div>
 </div>
 
 <script>
@@ -408,6 +458,8 @@
       status: statusText.textContent,
       count: n,
       tools: document.querySelectorAll("#messages .bubble.tool").length,
+      // 待审批数：冒烟测试靠它判断"弹窗有没有出现、点完有没有收掉"
+      perm: permQueue.length + (permCurrent ? 1 : 0),
       user: user, assistant: assistant, error: error
     };
   }
@@ -457,9 +509,14 @@
   // 内核一轮里可能调多个工具，每个 call_id 一张卡片；同一 call_id 的
   // start / update 就地更新同一张卡片 —— 否则一次工具调用会在界面上
   // 闪出三四张（start 一张、每次 update 一张）。
-  var TOOL_KIND_LABEL = { read: "读取", edit: "编辑", execute: "执行", other: "工具" };
+  var TOOL_KIND_LABEL = {
+    read: "读取", edit: "编辑", delete: "删除", move: "移动", search: "搜索",
+    execute: "执行", think: "思考", fetch: "获取", switch_mode: "切模式",
+    other: "工具",
+  };
   var TOOL_STATUS_LABEL = {
-    pending: "等待中", in_progress: "运行中", completed: "完成", failed: "失败",
+    pending: "等待中", in_progress: "运行中", completed: "完成",
+    failed: "失败", cancelled: "已取消",
   };
 
   function upsertTool(ev) {
@@ -488,8 +545,9 @@
     if (ev.title) card._name.textContent = ev.title;
     card._kind.textContent = TOOL_KIND_LABEL[ev.kind] || ev.kind || "工具";
     card._st.textContent = TOOL_STATUS_LABEL[ev.status] || ev.status || "";
-    card.classList.remove("running", "done", "failed");
+    card.classList.remove("running", "done", "failed", "cancelled");
     if (ev.status === "failed") card.classList.add("failed");
+    else if (ev.status === "cancelled") card.classList.add("cancelled");
     else if (ev.status === "completed") card.classList.add("done");
     else card.classList.add("running");
     if (ev.output) {
@@ -505,6 +563,67 @@
     el.className = "bubble " + (role === "user" ? "user" : "assistant");
     el.innerHTML = renderMd(text || "");
     messages.appendChild(el);
+  }
+
+  // ---- 审批弹窗 ----
+  //
+  // 为什么必须有：agentd 那边是 `await conn.request_permission(...)` ——
+  // 它真的在等我们回一帧。界面上不给用户能点的东西，那一轮就永远停在那儿，
+  // 而且两边日志都不会报错（只是"卡住了"）。
+  var permQueue = [];      // 还没展示的审批（一轮里可能连着来好几个）
+  var permCurrent = null;  // 正在展示的那个
+  var permEl = document.getElementById("perm");
+
+  function showNextPermission() {
+    if (permCurrent || !permQueue.length) return;
+    var req = permQueue.shift();
+    permCurrent = req;
+
+    document.getElementById("perm-name").textContent = req.title || "(工具)";
+    document.getElementById("perm-kind").textContent =
+      TOOL_KIND_LABEL[req.kind] || req.kind || "";
+    var detail = document.getElementById("perm-detail");
+    detail.textContent = req.detail || "";
+    detail.style.display = req.detail ? "" : "none";
+
+    var box = document.getElementById("perm-actions");
+    box.innerHTML = "";
+    var opts = (req.options || []).slice();
+    if (!opts.length) opts = [{ id: "", label: "拒绝", kind: "reject" }];
+    opts.forEach(function (o) {
+      var b = document.createElement("button");
+      b.textContent = o.label || o.id || "选择";
+      var kind = String(o.kind || "");
+      if (kind === "allow_always") b.className = "primary";
+      else if (kind.indexOf("allow") !== 0) b.className = "warn";
+      b.addEventListener("click", function () { answerPermission(o.id); });
+      box.appendChild(b);
+    });
+
+    permEl.classList.add("show");
+    report();
+  }
+
+  function answerPermission(optionId) {
+    var req = permCurrent;
+    if (!req) return;
+    permCurrent = null;
+    permEl.classList.remove("show");
+    // 空 option_id = "没选任何选项"，协议层会翻成 ACP 的 cancelled（= 拒绝）。
+    // 回不去也不用重试：agentd 那边有超时兜底，最多白等。
+    api("/api/permission", {
+      method: "POST",
+      body: { id: req.id, option_id: optionId || "" }
+    }).catch(function () {}).then(function () {
+      showNextPermission();
+      report();
+    });
+  }
+
+  function clearPermissions() {
+    permQueue = [];
+    permCurrent = null;
+    permEl.classList.remove("show");
   }
 
   // ---- 会话侧栏：列表 / 续聊 / 新对话 ----
@@ -598,6 +717,7 @@
     messages.innerHTML = "";
     current = null;
     toolCards = {};
+    clearPermissions();  // 切会话时旧弹窗对应的请求已经作废（协议层会回 cancelled）
     (history || []).forEach(function (m) {
       addStaticBubble(m.role, m.content || "");
     });
@@ -631,6 +751,7 @@
       current = null;
       toolCards = {};
       messages.innerHTML = "";
+      clearPermissions();
       setActive(r.session);
       setStatus("ready", "新会话 " + (r.session || "").slice(0, 8));
       loadSessions();
@@ -693,6 +814,12 @@
     if (ev.type === "tool") {
       upsertTool(ev);
       report();
+      return;
+    }
+
+    if (ev.type === "permission") {
+      permQueue.push(ev);
+      showNextPermission();
       return;
     }
 
@@ -767,7 +894,11 @@
       e.preventDefault();
       toggleLog();
     }
-    if (e.key === "Escape" && logPane.classList.contains("show")) toggleLog();
+    if (e.key === "Escape") {
+      // 审批弹窗优先：Esc 关掉它 = 拒绝（agent 会换条路，不是"卡住"）
+      if (permCurrent) { e.preventDefault(); answerPermission(""); return; }
+      if (logPane.classList.contains("show")) toggleLog();
+    }
   });
   sendBtn.addEventListener("click", submit);
 

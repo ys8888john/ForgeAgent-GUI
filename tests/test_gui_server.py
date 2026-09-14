@@ -291,3 +291,77 @@ def test_session_new_creates_fresh_session():
     finally:
         srv.stop()
 
+
+# ---- 审批：agent -> 页面 -> agent 的往返 ----
+#
+# 这条路必须走 HTTP：页面的唯一回话通道就是 fetch。所以"能不能把审批请求送到
+# 页面"和"页面能不能把答案送回去"这两件事都要在真 HTTP 上验一遍 ——
+# 只测 bridge 层证明不了这一跳。
+
+def _perm_server():
+    from test_gui_bridge import _PermClient
+
+    fake = _PermClient()
+    srv = UiServer(bridge=Bridge(client=fake)).start()
+    return srv, fake
+
+
+def _sample_permission():
+    from forgeagent.acp_client import PermissionRequest
+
+    return PermissionRequest(
+        request_id=77,
+        session_id="s1",
+        call_id="call_1",
+        title="write_file",
+        kind="edit",
+        detail="path: notes.txt",
+        options=[
+            {"optionId": "allow_once", "name": "允许一次", "kind": "allow_once"},
+            {"optionId": "reject", "name": "拒绝", "kind": "reject_once"},
+        ],
+    )
+
+
+def test_permission_event_reaches_page_over_http():
+    srv, fake = _perm_server()
+    try:
+        fake.on_permission(_sample_permission())
+        evs = srv.client().get("/api/events?timeout=1")["events"]
+        assert evs[0]["type"] == "permission"
+        assert evs[0]["id"] == 77
+        assert evs[0]["title"] == "write_file"
+    finally:
+        srv.stop()
+
+
+def test_permission_answer_goes_back_over_http():
+    """页面点"允许"后这一帧必须真的回到协议层 —— 不回就等于永久挂住。"""
+    srv, fake = _perm_server()
+    try:
+        res = srv.client().post("/api/permission", {"id": 77, "option_id": "allow_once"})
+        assert res["ok"] is True
+        assert fake.answered == [(77, "allow_once")]
+    finally:
+        srv.stop()
+
+
+def test_permission_answer_requires_token():
+    """审批接口同样在安全边界内，不能裸奔。"""
+    import urllib.error
+    import urllib.request
+
+    srv, _ = _perm_server()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{srv.port}/api/permission",
+            data=json.dumps({"id": 1, "option_id": "allow_once"}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc.value.code == 401
+    finally:
+        srv.stop()
+

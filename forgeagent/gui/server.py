@@ -239,6 +239,15 @@ class _Handler(BaseHTTPRequestHandler):
             bridge.push_command(body if isinstance(body, dict) else {})
             return self._json({"ok": True})
 
+        # ---- 审批应答 ----
+        # agent 发来的 session/request_permission 是个**请求**，不回对方就永久阻塞
+        # （agentd 侧是 await conn.request_permission）。所以这个接口不是可选的装饰，
+        # 是协议闭环的一半。option_id 为空串表示"用户没选"（关掉弹窗/超时）。
+        if u.path == "/api/permission":
+            return self._json(
+                bridge.answer_permission(body.get("id"), str(body.get("option_id") or ""))
+            )
+
         # ---- 会话：新对话 / 续聊 ----
         # 续聊前先确认 id 真在库里（拿着只读视图查），再让 bridge 切换 sessionId；
         # 这样即使前端传个瞎编的 id，也不会悄悄把后续消息写进一个幽灵会话。

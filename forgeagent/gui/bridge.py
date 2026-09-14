@@ -19,7 +19,7 @@ import queue
 import threading
 from typing import Any
 
-from ..acp_client import AcpClient, Turn
+from ..acp_client import AcpClient, PermissionRequest, Turn
 
 DEFAULT_POLL_TIMEOUT = 2.0  # JS 每次 await 的阻塞上限
 _MAX_BATCH = 500  # 一次取走上限，防止生成极快时单批过大
@@ -29,11 +29,12 @@ class Bridge:
     """把 AcpClient 的异步事件流转成「JS 来取一批」的同步接口。
 
     事件都是普通 dict（直接 JSON 序列化给 JS），类型有：
-        status  连接状态变化
-        user    用户发出的消息（回声，让界面立刻有反馈）
-        delta   流式增量，role ∈ assistant / thought / error
-        tool    工具调用状态变化（含 id/title/kind/status/output）
-        done    本轮结束，带 stop reason 和 error
+        status     连接状态变化
+        user       用户发出的消息（回声，让界面立刻有反馈）
+        delta      流式增量，role ∈ assistant / thought / error
+        tool       工具调用状态变化（含 id/title/kind/status/output）
+        permission agent 请求审批（带 id/tool/detail/options），界面必须回
+        done       本轮结束，带 stop reason 和 error
     """
 
     def __init__(
@@ -53,6 +54,11 @@ class Bridge:
         self._ui: dict = {}  # JS -> Python：界面自报的状态，外部可观测
         self._busy = False
         self._closed = threading.Event()
+
+        # 审批请求来自协议层的读取协程（跑在本 bridge 的事件循环线程里），
+        # 而 _events 是 queue.Queue（线程安全），所以直接塞进去是安全的。
+        if hasattr(self._client, "on_permission"):
+            self._client.on_permission = self._on_permission
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -151,6 +157,50 @@ class Bridge:
         self._emit(type="user", text=text)
         self._submit(self._stream(text))
         return {"ok": True}
+
+    # ---- 审批：agent -> 界面 -> agent 的往返 ----
+
+    def _on_permission(self, req: PermissionRequest) -> None:
+        """协议层收到审批请求 → 变成一条 permission 事件给界面。
+
+        这里**不阻塞**：事件入队就返回，答案稍后由界面经 answer_permission 送回。
+        协议层那边有个 Future 在等，两边谁都不卡住谁。
+        """
+        self._emit(
+            type="permission",
+            id=req.request_id,
+            call_id=req.call_id,
+            title=req.title,
+            kind=req.kind,
+            detail=req.detail,
+            options=[
+                {
+                    "id": str(o.get("optionId") or ""),
+                    "label": str(o.get("name") or o.get("optionId") or ""),
+                    "kind": str(o.get("kind") or ""),
+                }
+                for o in req.options
+            ],
+        )
+
+    def answer_permission(self, request_id: Any, option_id: str) -> dict:
+        """界面点了某个选项；关掉弹窗/超时传空串（协议层会翻成 ACP 的 cancelled）。"""
+        if self._closed.is_set():
+            return {"ok": False, "error": "已关闭"}
+        answer = getattr(self._client, "answer_permission", None)
+        if not callable(answer):
+            # 老/精简版 client 没有审批能力。给一句人话，别让它变成 AttributeError。
+            return {"ok": False, "error": "当前客户端不支持审批"}
+        try:
+            rid = int(request_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "request_id 不合法"}
+        try:
+            ok = self._submit(answer(rid, str(option_id or ""))).result(timeout=5)
+        except Exception as exc:  # noqa: BLE001 - 边界处统一转错误
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        # answered=False 表示这个请求已经不在了（超时/重复点击）—— 不是错误，但要说清楚
+        return {"ok": True, "answered": bool(ok)}
 
     def next_events(self, timeout: float = DEFAULT_POLL_TIMEOUT) -> list[dict]:
         """阻塞到有事件可取，超时返回空列表。JS 端循环 await 这个方法。

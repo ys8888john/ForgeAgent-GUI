@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -67,3 +68,55 @@ async def test_dead_agent_raises_acp_error():
     with pytest.raises(AcpError):
         await c.start()
     await c.close()
+
+
+# ---- 反向请求：审批往返（agent 真的会停下来等我们回帧）----
+
+
+async def test_permission_round_trip_allow(client: AcpClient):
+    """整条往返：agent 发请求 → 客户端问"界面" → 界面答 → agent 拿到答案继续。
+
+    假 agent 会把答案写进 thought 通道（`[perm] allow`），所以"客户端到底回了什么"
+    是可断言的 —— 光看"没报错"证明不了任何事。
+    """
+    box: dict = {}
+
+    def hook(req):
+        box["req"] = req
+        # 真实界面是用户点按钮；这里模拟"立刻点允许一次"
+        asyncio.ensure_future(client.answer_permission(req.request_id, req.allow_ids[0]))
+
+    client.on_permission = hook
+    turns = [t async for t in client.prompt("请确认一下")]
+    assert "[perm] allow" in turns[-1].thought
+
+    req = box["req"]
+    assert req.title == "run_command"
+    assert req.kind == "execute"
+    assert "echo hi" in req.detail
+    assert req.call_id == "fake-call-1"
+    assert {o["optionId"] for o in req.options} == {
+        "allow_once",
+        "allow_session",
+        "reject",
+    }
+
+
+async def test_permission_round_trip_deny_when_ui_rejects(client: AcpClient):
+    def hook(req):
+        asyncio.ensure_future(client.answer_permission(req.request_id, "reject"))
+
+    client.on_permission = hook
+    turns = [t async for t in client.prompt("请确认一下")]
+    assert "[perm] deny" in turns[-1].thought
+
+
+async def test_permission_is_denied_when_no_ui_handler(client: AcpClient):
+    """没挂处理器（等于没界面）时必须自动拒绝。
+
+    这是整个审批机制的安全底线：宁可什么都不做，也不能在无人确认的情况下放行。
+    """
+    turns = [t async for t in client.prompt("请确认一下")]
+    assert "[perm] deny" in turns[-1].thought
+    # 而且这一轮本身要正常走完，不能因为审批被拒就整轮卡死
+    assert turns[-1].text == "你好世界"

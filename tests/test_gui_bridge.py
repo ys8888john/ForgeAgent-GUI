@@ -277,6 +277,123 @@ def test_no_tool_events_for_plain_reply():
         bridge.close()
 
 
+# ---- 审批：agent -> 界面 -> agent 的往返 ----
+
+class _PermClient(_FakeClient):
+    """带 on_permission / answer_permission 的假 client。
+
+    Bridge 在 __init__ 里会用 hasattr 探测 on_permission ——
+    所以这个类长得像 AcpClient，才测得出接线对不对。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_permission = None      # 等着 Bridge 来覆盖
+        self.answered: list[tuple[int, str]] = []
+
+    async def answer_permission(self, request_id: int, option_id: str) -> bool:
+        self.answered.append((request_id, option_id))
+        return True
+
+
+def test_permission_hook_is_installed_on_client():
+    fake = _PermClient()
+    bridge = Bridge(client=fake)
+    try:
+        # Bridge 必须把自己的 _on_permission 装上去，否则协议层收到的审批
+        # 根本没法变成界面事件（会走"没人可问 → 自动拒绝"那条路）。
+        assert callable(fake.on_permission)
+    finally:
+        bridge.close()
+
+
+def test_permission_event_reaches_the_ui():
+    from forgeagent.acp_client import PermissionRequest
+
+    fake = _PermClient()
+    bridge = Bridge(client=fake)
+    try:
+        fake.on_permission(
+            PermissionRequest(
+                request_id=77,
+                session_id="s1",
+                call_id="call_1",
+                title="run_command",
+                kind="execute",
+                detail="command: echo hi",
+                options=[
+                    {"optionId": "allow_once", "name": "允许一次", "kind": "allow_once"},
+                    {"optionId": "reject", "name": "拒绝", "kind": "reject_once"},
+                ],
+            )
+        )
+        evs = bridge.next_events(timeout=1.0)
+        assert len(evs) == 1
+        ev = evs[0]
+        assert ev["type"] == "permission"
+        assert ev["id"] == 77
+        assert ev["title"] == "run_command"
+        assert ev["detail"] == "command: echo hi"
+        # options 折成界面好渲染的形状（id / label / kind），前端不用懂 ACP 字段名
+        assert ev["options"] == [
+            {"id": "allow_once", "label": "允许一次", "kind": "allow_once"},
+            {"id": "reject", "label": "拒绝", "kind": "reject_once"},
+        ]
+    finally:
+        bridge.close()
+
+
+def test_answer_permission_routes_to_client():
+    fake = _PermClient()
+    bridge = Bridge(client=fake)
+    try:
+        r = bridge.answer_permission(77, "allow_once")
+        assert r == {"ok": True, "answered": True}
+        assert fake.answered == [(77, "allow_once")]
+    finally:
+        bridge.close()
+
+
+def test_answer_permission_accepts_string_id_from_json():
+    """界面传过来的是 JSON，id 会是字符串 —— 不能因为类型就拒掉。"""
+    fake = _PermClient()
+    bridge = Bridge(client=fake)
+    try:
+        assert bridge.answer_permission("77", "allow_once")["ok"] is True
+        assert fake.answered == [(77, "allow_once")]
+    finally:
+        bridge.close()
+
+
+def test_answer_permission_rejects_bad_id():
+    bridge = Bridge(client=_PermClient())
+    try:
+        assert bridge.answer_permission("abc", "allow_once")["ok"] is False
+        assert bridge.answer_permission(None, "allow_once")["ok"] is False
+    finally:
+        bridge.close()
+
+
+def test_answer_permission_after_close_is_refused():
+    bridge = Bridge(client=_PermClient())
+    bridge.close()
+    assert bridge.answer_permission(1, "allow_once")["ok"] is False
+
+
+def test_bridge_works_with_client_lacking_permission_support():
+    """老 client（没有 on_permission / answer_permission）也得能用。
+
+    不能因为多了审批就崩，也不能静默假装答成功 —— 要回一句人话。
+    """
+    bridge = Bridge(client=_FakeClient())
+    try:
+        r = bridge.answer_permission(1, "allow_once")
+        assert r["ok"] is False
+        assert "不支持" in r["error"]
+    finally:
+        bridge.close()
+
+
 # ---- 取事件 / 关闭 ----
 
 def test_next_events_returns_empty_on_timeout():

@@ -129,6 +129,8 @@ python3 -m venv .venv
 | `AGENTD_OLLAMA_MODEL` | 透传给 agentd | `auto`（见下） |
 | `AGENTD_OLLAMA_HOST` | 透传给 agentd | `http://localhost:11434` |
 | `AGENTD_SCRIPT_JSON` | 透传给 agentd：`script` 后端的回放脚本（端到端验证用） | 空 |
+| `AGENTD_TOOLS` | 透传给 agentd：原生工具范围 `native` / `read_only` / `off` | `native` |
+| `AGENTD_TOOLS_APPROVE` | 透传给 agentd：审批策略 `native` / `all` / `none` | `native` |
 | `FORGEAGENT_MCP_CONFIG` | MCP 配置文件位置 | `~/.forgeagent/mcp.json` |
 | `FORGEAGENT_GUI_MODE` | 前端载体：`electron` / `serve` | `electron` |
 | `FORGEAGENT_PYTHON` | electron 模式下拉起 Python 后端的解释器（由 `forgeagent-gui` 自动设为 `sys.executable`）| 系统 `python3` |
@@ -232,6 +234,54 @@ server → 工具事件回灌成界面 reducer 认识的 `Turn.tools`。
    dict 就会静默跳过，日志还说"接入了 1 个 server"却一个工具都列不出来。
    `McpHub` 现在两种形态都吃。
 
+### 原生工具与审批
+
+除了 MCP，agentd 还自带一组**进程内**的原生工具（不需要任何配置就可用）：
+`read_file` / `glob` / `grep` / `write_file` / `edit` / `run_command`。
+它们和 MCP 工具合并成同一个 tools 数组喂给模型，界面上看起来都是工具卡片。
+
+| 工具 | 卡片标签 | 要审批吗 |
+|---|---|---|
+| `read_file` | 读取 | 否 |
+| `glob` / `grep` | 搜索 | 否 |
+| `write_file` / `edit` | 编辑 | **是** |
+| `run_command` | 执行 | **是** |
+
+**审批是这一层最要紧的东西。** 会改变外部状态的动作在执行前会停下，
+agentd 通过 ACP 的 `session/request_permission` 反向请求 GUI，界面弹一个框：
+
+- 「允许一次」/「本会话总是允许」/「拒绝」；
+- 选了"本会话总是允许"之后，同一个工具名不再打扰（记忆在客户端）；
+- 关掉弹窗 / 按 Esc / 超时 = 拒绝，agent 会收到 `[错误] 用户拒绝执行 xxx` 并换条路走，
+  整轮对话继续，不会卡住。
+
+只读动作（读/搜）**不弹审批**：每个 `ls` 都弹一次，用户三分钟就学会无脑点允许，
+审批本身也就废了。
+
+**不想用 / 想收紧**：这些后端配置直接透传给 agentd：
+
+```bash
+AGENTD_TOOLS=read_only forgeagent     # 只留读/搜三个，写和执行全部不给模型
+AGENTD_TOOLS=off forgeagent           # 全部关掉，退回纯聊天
+AGENTD_TOOLS_APPROVE=all forgeagent   # 非只读动作一律弹审批（更严）
+AGENTD_TOOLS_APPROVE=none forgeagent  # 全放行（仅无人值守场景，慎用）
+```
+
+原生工具的路径一律限制在**会话工作目录**内（`FORGEAGENT_CWD`），`..` 会被
+`resolve` 展开后再判越界。要放开得显式设 `AGENTD_TOOLS_ALLOW_OUTSIDE=true`。
+
+**不用真模型验这条链路**：
+
+```bash
+python scripts/native_tools_e2e.py          # 允许：文件真被写出来
+python scripts/native_tools_e2e.py --deny   # 拒绝：文件绝不能存在
+```
+
+它给 agentd 塞回放脚本，让"模型"依次调 `read_file` + `glob`（不该弹审批）、
+`write_file`（该弹审批），然后断言：只弹了一次审批、kind 分别是
+read/search/edit、允许时文件真的落盘 / 拒绝时文件绝不存在、拒绝被还原成
+`cancelled` 而不是 `failed`。
+
 ### 三跳验证
 
 前端 → 后端 → Ollama，任一节断掉症状都长得差不多（"没反应"或"一片空白"），
@@ -279,15 +329,17 @@ examples/
 scripts/
   e2e.py            三跳验证（Ollama / agentd / TUI 界面）
   mcp_e2e.py        MCP 端到端验证（不用真模型：script 后端 + 真 stdio MCP server）
+  native_tools_e2e.py  原生工具 + 审批端到端验证（--deny 走拒绝路径）
   demo_mcp_gui.py   一键开「能看见工具卡片」的 GUI（不用 Ollama；可选 --serve / --model）
   install_demo_mcp.py  把示例 MCP server 写进 ~/.forgeagent/mcp.json（默认干跑）
 tests/
-  test_acp_client.py   reducer 单测，不用起进程
+  test_acp_client.py   reducer 单测 + 反向请求（审批）单测，不用起进程
   test_app.py          TUI 冒烟（headless）
   test_gui_bridge.py   桥接层单测（注入假 client，无需图形环境）
   test_gui_server.py   本机 UI 服务单测：真起 HTTP 服务，真发请求
   test_gui_mcp_config.py  mcp.json 解析单测（含"必填字段不能省"的回归）
-  test_end_to_end.py   真起子进程跑一遍完整握手 + 流式
+  test_end_to_end.py   真起子进程跑一遍完整握手 + 流式 + 审批往返
+  fake_agent.py        假的 ACP agent（含反向请求），端到端测试用
 ```
 
 **为什么要分这么多层：** 窗口必须有图形环境才能跑，CI 里测不了；但只要把界面
@@ -295,7 +347,7 @@ tests/
 `test_gui_server.py` 真起服务、真发请求，把「前端那一跳」验得干干净净。
 再往下一层，`bridge.py` 里一行 GUI 代码都没有，塞个假的 async client 就能测全部逻辑。
 
-### 三个不显然的设计决定
+### 几个不显然的设计决定
 
 **1. 手写 JSON-RPC，不用 SDK 的高层 helper。**
 官方 SDK 的 `spawn_agent_process` 签名跨版本变过（factory 风格 vs 直接传实例），靠不住。
@@ -323,11 +375,31 @@ refusal / cancelled` 五种，**没有 error**。agentd 只好把错误塞进 th
 让人以为模型在自言自语。两个仓库各自定义了同一个字面量，改一处要改另一处——
 最坏情况只是错误退化成普通思考文本，不会崩。
 
+**6. 反向请求必须回帧，而且不能靠 id 判方向。**
+ACP 不是客户端单向发命令：agent 会反过来请求客户端（审批、读文件、开终端）。
+这些是 **JSON-RPC 请求**，每个都必须回一帧 —— 不回，agentd 那边就永久卡在
+`await` 上，而且两边日志都干干净净。所以：
+
+- `_read_stdout` 按**有没有 `method` 字段**判断方向，不是按 `id`。两个方向各自
+  从 0/1 开始编号，**id 必然撞车**（实测 agentd 的审批请求就是 id=0、1、2…）。
+  按 id 判会把审批请求当成 `session/prompt` 的响应 —— prompt 提前结束、
+  审批永远没人回、整轮静默挂死。这条有专门的回归测试。
+- 没实现的协议扩展（`fs/read_text_file` 之类）也必须回 `-32601`，不能静默丢掉。
+- 没有处理器 / 处理器抛异常 / 用户关掉弹窗 / 超时，**一律按拒绝回帧**。方向不能反：
+  反了就是"审批通道一坏，所有写操作自动放行"。
+
+**7. `DENY_MARK`：把"用户拒绝"从 `failed` 里救回来。**
+ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
+**没有 cancelled**。内核里"用户拒绝"这个状态到了协议层被迫折成 `failed` ——
+于是"你点的拒绝"和"命令真的炸了"在协议上长得一模一样。前端只能靠输出文案
+（`acp_client.DENY_MARK`）把它还原成 `cancelled`，界面才会显示虚线灰边的
+「已取消」而不是红色「失败」。同样是两个仓库共享的字面量。
+
 ## 当前限制
 
-- **MCP 工具调用已可用**（见上面的「MCP（工具调用）」一节）：`mcp.json` 声明 server、
-  agentd 用 `agent` 模式跑工具循环、GUI 渲染工具卡片。**没做**的是：权限弹窗、
-  diff 视图、工具调用的中途取消。
+- **MCP 工具 + 原生工具都可用**（见上面的「MCP（工具调用）」与「原生工具与审批」）：
+  agentd 用 `agent` 模式跑工具循环、GUI 渲染工具卡片并**弹审批框**。
+  **没做**的是：diff 视图、工具调用的中途取消（`session/cancel` 目前只是通知）。
 - **工具卡片是本轮内的临时状态**，不进历史。刷新/续聊只重放落库的 user/assistant
   文本，工具卡片不会重现（内核只把最终回复落库，不存中间的 tool 往返）。
 - HTML 前端里的 Markdown 是**自带的极简实现**（标题、粗斜体、列表、行内代码、围栏代码块），
@@ -348,7 +420,10 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-覆盖协议层、TUI、GUI 桥接层、**GUI 的 HTTP 层**。
+覆盖协议层、TUI、GUI 桥接层、**GUI 的 HTTP 层**、反向请求（审批）。
 桥接层和 HTTP 层都用假 client 测，不需要图形环境；真起子进程的端到端验证
-放在 `scripts/` 下手动跑（`e2e.py`），不进 pytest ——
-它依赖 Ollama 和图形环境，进 CI 只会随机变红。
+放在 `scripts/` 下手动跑（`e2e.py` / `mcp_e2e.py` / `native_tools_e2e.py`），
+不进 pytest —— 它们依赖 Ollama 或外部仓库，进 CI 只会随机变红。
+
+`test_end_to_end.py` 是例外：它用 `tests/fake_agent.py` 顶替 agentd，
+所以既真起子进程、又不依赖外部仓库，能进 CI。
