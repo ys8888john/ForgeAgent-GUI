@@ -10,26 +10,23 @@
 
 - **TUI**（`forgeagent`）：终端字符界面，依赖 textual。
 - **GUI**：界面本体是同一份 `gui/assets/index.html`（自包含 HTML/CSS/JS，三平台共用），
-  由下面四种**载体**渲染——同一份 HTML，只是"壳"不同：
+  由下面两种**载体**渲染——同一份 HTML，只是"壳"不同：
 
   | 载体 | 启动 | 渲染 | 依赖 | 定位 |
   |---|---|---|---|---|
   | `electron`（默认）| `forgeagent-gui` | **自带 Chromium**（Electron 壳）| Node + `npm i` 装 electron | 主前端，最像 WorkBuddy |
-  | `qt` | `forgeagent-gui --mode qt` | Qt 原生控件 | PySide6 | Chromium 起不来的兜底 |
-  | `webview` | `forgeagent-gui --mode webview` | 系统 WebView（Win=WebView2）| pywebview | 备选，本机会崩则别用 |
   | `serve` | `forgeagent-gui --mode serve` | 不开窗，只起服务 | 无 | 交给外部（浏览器 / IDE）渲染 |
 
-四种载体 + TUI 共用同一套协议层（`acp_client.py`）和同一个后端（HTTP），功能等价。
+两种载体 + TUI 共用同一套协议层（`acp_client.py`）和同一个后端（HTTP），功能等价。
 换壳不改协议、内核、存储任何一行。
 
-**为什么主前端是 Electron 而不是 pywebview（webview 模式）**：pywebview 在 Windows 上
-用的是 **Edge WebView2 = Chromium**。在显卡驱动 / Hyper-V 有问题的机器上，WebView2 的
+**为什么主前端是 Electron 而不是系统 WebView**：系统 WebView（Windows 上的 Edge WebView2）
+本质也是 Chromium。在显卡驱动 / Hyper-V 有问题的机器上，WebView2 的
 **浏览器进程会直接崩**（报 `The instance of CoreWebView2 is no longer valid
 because the browser process crashed`），症状是窗口能开、页面能加载、JS 跑两下就再没动静。
 而 Electron 自带一套 Chromium + 软件渲染兜底（swiftshader），对同样的 GPU 问题钝感得多——
 **WorkBuddy 自己就是 Electron 应用，能在崩机王上跑稳，也是同一套道理**。所以我们
-参考 WorkBuddy，把前端定为「Electron 壳包 HTML」的形态。Qt 走系统原生控件、不碰浏览器内核，
-留作极端兜底（仅当 Chromium 都起不来时才用）。
+参考 WorkBuddy，把前端定为「Electron 壳包 HTML」的形态。
 
 Electron 壳在 `electron/`：先 `npm install` 装好 electron，再 `forgeagent-gui` 即可。
 详见下文「跑起来」。
@@ -39,9 +36,7 @@ Electron 壳在 `electron/`：先 `npm install` 装好 electron，再 `forgeagen
 GUI 这一版的界面和 Python 之间是这样通信的：
 
 ```
-Qt 窗口 ──┐
-          ├──HTTP（只绑 127.0.0.1）──> UiServer ──> Bridge ──> AcpClient ──stdio──> agentd
-HTML 窗口 ─┘
+HTML 窗口（Electron 壳）──HTTP（只绑 127.0.0.1）──> UiServer ──> Bridge ──> AcpClient ──stdio──> agentd
 ```
 
 `UiServer` 只监听 `127.0.0.1`，端口由内核随机分配，每个进程一次性 token
@@ -49,15 +44,8 @@ HTML 窗口 ─┘
 `X-ForgeAgent-Token`。**它不是"把 ACP 搬上 web"**：ACP 本身仍然只在 stdio 上跑，
 agentd 一个字没改；这一跳纯属「本机窗口 ↔ 本机 Python 进程」。
 
-早先用的是 pywebview 自带的 `js_api`，踩了两个坑，都已绕开：
-
-1. `window.pywebview` 是**页面加载完之后**才由宿主注入的
-   （`inject_pywebview` 挂在 `NavigationCompleted` 上，还分两步、在另一个线程里做）。
-   页面里同步判断 `typeof pywebview === "undefined"` 必然为真，
-   于是界面永远显示"不是通过 pywebview 打开的"——而桥其实好得很。
-2. `window.evaluate_js()` 在 EdgeChromium 后端会**死锁**：pywebview 在
-   continuation 里做 `json.loads(task.Result)`，一抛异常就不 release 信号量，
-   `semaphore.acquire()` 永远等不到。想从 Python 侧读 DOM 验证界面就彻底没戏。
+早期试过让界面和 Python 走 pywebview 的 `js_api`，有两个坑（脚本注入时机、后端死锁），
+所以改成本机 HTTP：
 
 换成 HTTP 之后：不依赖脚本注入，三平台行为一致，Python 侧不需要 `evaluate_js`，
 而且**能脱离 GUI 直接测**（`tests/test_gui_server.py` 真发 HTTP 请求跑完整一轮）。
@@ -79,7 +67,7 @@ cd D:\workspace\ForgeAgent-GUI
 
 # 第一次：建 venv 并装依赖（agentd 是另一个仓库，一起装进来）
 <你的 Python> -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev,qt]" -e "D:\workspace\Agentd"
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]" -e "D:\workspace\Agentd"
 
 # 默认前端是 Electron（自带 Chromium，最像 WorkBuddy）。electron 是 Node 包，单独装一次：
 cd electron
@@ -94,9 +82,6 @@ cd ..
 
 # 三跳验证
 .\.venv\Scripts\python.exe scripts\e2e.py --cwd D:\workspace\Agentd
-
-# GUI 冒烟测试（自动开关窗口，真连 agentd）
-.\.venv\Scripts\python.exe scripts\gui_smoke.py --cwd D:\workspace\Agentd
 ```
 
 想少敲路径就激活 venv（若 PowerShell 报执行策略错误，用上面带全路径的写法即可）：
@@ -113,7 +98,7 @@ forgeagent-gui
 ```bash
 cd ~/workspace/ForgeAgent-GUI
 python3 -m venv .venv
-./.venv/bin/pip install -e ".[dev,qt]" -e "$HOME/workspace/Agentd"
+./.venv/bin/pip install -e ".[dev]" -e "$HOME/workspace/Agentd"
 
 ./.venv/bin/python -m forgeagent.gui      # GUI
 ./.venv/bin/python -m forgeagent          # TUI
@@ -122,31 +107,11 @@ python3 -m venv .venv
 
 ### 跨平台的系统依赖
 
-- **TUI + qt 前端**：纯 pip 依赖，三平台都一样，不需要装系统包。
+- **TUI**：纯 pip 依赖（textual），三平台都一样，不需要装系统包。
 - **electron 前端（默认）**：需要 Node.js（含 npm）。一次 `cd electron && npm install`
   会把 Electron 及其自带 Chromium 装进 `electron/node_modules`，之后 `forgeagent-gui`
   直接调用，**不依赖系统 WebView**。Chromium 是 Electron 自带、带软件渲染兜底，
   所以哪怕系统 WebView2 崩机王也能跑（同 WorkBuddy）。
-- **webview 前端**用的是系统自带 WebView —— pywebview 不打包浏览器，
-  所以体积小，但系统侧得有东西可用：
-
-| 平台 | 渲染 | 系统依赖 |
-|---|---|---|
-| Windows | Edge WebView2 | Win11 自带。Win10 装 [Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) |
-| macOS | WKWebKit | 系统自带，无需安装（用 python.org 或 brew 的 framework 版 Python） |
-| Linux | WebKitGTK + PyGObject | **最常缺这个**，见下 |
-
-```bash
-# Debian / Ubuntu
-sudo apt install python3-gi python3-gi-cairo gir1.2-webkit2-4.1
-# Fedora
-sudo dnf install python3-gobject webkit2gtk4.1
-# Arch
-sudo pacman -S python-gobject webkit2gtk-4.1
-```
-
-webview 模式起不来时可以强制换后端：`FORGEAGENT_GUI=qt forgeagent-gui`
-（可选值 qt / gtk / cef，取决于装了什么）。启动失败时程序会打印对应平台的排查提示。
 
 其余跨平台注意事项：
 - 启动 agent 的默认命令是 `[sys.executable, "-m", "agentd.server"]`，不走 shell，
@@ -163,9 +128,8 @@ webview 模式起不来时可以强制换后端：`FORGEAGENT_GUI=qt forgeagent-
 | `AGENTD_LLM_BACKEND` | 透传给 agentd：`fake` / `ollama` / `openai_compat` | `ollama` |
 | `AGENTD_OLLAMA_MODEL` | 透传给 agentd | `auto`（见下） |
 | `AGENTD_OLLAMA_HOST` | 透传给 agentd | `http://localhost:11434` |
-| `FORGEAGENT_GUI_MODE` | 前端载体：`electron` / `qt` / `webview` / `serve` | `electron` |
+| `FORGEAGENT_GUI_MODE` | 前端载体：`electron` / `serve` | `electron` |
 | `FORGEAGENT_PYTHON` | electron 模式下拉起 Python 后端的解释器（由 `forgeagent-gui` 自动设为 `sys.executable`）| 系统 `python3` |
-| `FORGEAGENT_GUI` | webview 模式下强制后端：`qt` / `gtk` / `cef` | 自动 |
 | `FORGEAGENT_UI_DEBUG` | 设为 1 时把本机服务的每个请求打到 stderr | 关 |
 
 **默认用 `sys.executable` 而不是 `"python"` 拉起 agentd。** 两者装在同一
@@ -226,15 +190,12 @@ forgeagent/
   gui/
     bridge.py       桥接层：纯 Python，不依赖任何 GUI 库，可脱离 GUI 单测
     server.py       本机 UI 服务：bridge 的 HTTP 封装 + 静态页面（含 token 校验）
-    qt_ui.py        Qt 前端（默认）：原生控件，不碰浏览器内核
-    window.py       webview 前端：唯一 import webview 的地方
     assets/         HTML 前端（HTML/CSS/JS，无外部依赖、离线可用）
     __main__.py     GUI 入口（--mode 选前端载体）
 electron/          Electron 壳（main.js + package.json），默认前端载体：
                   自带 Chromium 渲染 assets/index.html，参考 WorkBuddy 的前端形态
 scripts/
   e2e.py            三跳验证（Ollama / agentd / TUI 界面）
-  gui_smoke.py      GUI 冒烟：真开窗口连真 agentd，自动开关（--headless 可不开窗）
 tests/
   test_acp_client.py   reducer 单测，不用起进程
   test_app.py          TUI 冒烟（headless）
@@ -283,7 +244,6 @@ refusal / cancelled` 五种，**没有 error**。agentd 只好把错误塞进 th
   内核补齐后，挂卡片的位置在 `acp_client.py` 的 `_apply_update` 里，已留好分支。
 - HTML 前端里的 Markdown 是**自带的极简实现**（标题、粗斜体、列表、行内代码、围栏代码块），
   没引外部库 —— 离线也能用，代价是高亮、表格这些还没做。
-  Qt 前端用的是 `QTextBrowser` 自带的 Markdown 渲染（一轮结束后重排）。
 - **会话侧栏 / 续聊已可用**（参考 WorkBuddy 的会话侧栏）：
   左侧栏列出 `~/.agentd/sessions.db` 里的历史会话（标题、最近时间、条数、末条预览），
   点一下即「续聊」。agentd 内核在每轮 `handle()` 开头会把整段历史 load 进上下文
@@ -301,10 +261,6 @@ pytest -q
 ```
 
 覆盖协议层、TUI、GUI 桥接层、**GUI 的 HTTP 层**。
-桥接层和 HTTP 层都用假 client 测，不需要图形环境；真起子进程和真开窗口的部分
-放在 `scripts/` 下手动跑（`e2e.py`、`gui_smoke.py`），不进 pytest ——
-它们依赖 Ollama 和图形环境，进 CI 只会随机变红。
-
-`gui_smoke.py` 有个 `--headless` 模式，不开窗口、纯跑 HTTP + bridge + agentd，
-适合在没有图形环境的机器上验链路；带窗口的模式会**让界面自己发消息**
-（不是 Python 代发）再读界面自报的状态，用来确认"界面真的渲染出来了"。
+桥接层和 HTTP 层都用假 client 测，不需要图形环境；真起子进程的端到端验证
+放在 `scripts/` 下手动跑（`e2e.py`），不进 pytest ——
+它依赖 Ollama 和图形环境，进 CI 只会随机变红。

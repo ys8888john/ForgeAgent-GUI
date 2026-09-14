@@ -17,12 +17,6 @@ dependencies = [
 acp = ["agent-client-protocol>=0.12.1"]
 # 默认前端载体是 Electron（自带 Chromium 渲染 HTML，最像 WorkBuddy），
 # 它不在这里列依赖——electron 是 Node 包，需在 electron/ 目录 `npm install`。
-# qt 是兜底：Qt 原生控件，不碰浏览器内核，最稳，仅当 Chromium 都起不来时用。
-qt = ["PySide6-Essentials>=6.6"]
-# 备选前端：HTML 界面。pywebview 用系统自带 WebView，不打包浏览器，体积很小，
-# 但 Windows 上就是 Edge WebView2 = Chromium，显卡驱动有问题的机器上浏览器进程会崩。
-# Linux 上还需要系统包：WebKitGTK + PyGObject，见 README 的跨平台一节。
-gui = ["pywebview>=5.0"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [project.scripts]

@@ -4,14 +4,10 @@
 Electron 应用，UI 是它自带 Chromium 渲染的 web 页面。所以我们把
 forgeagent/gui/assets/index.html 当成唯一要打磨的产品界面，用 Chromium 渲染它。
 
-三种窗口载体 + 一种无窗口：
-    electron（推荐）  Electron 壳包 index.html，自带 Chromium，绕开 Windows 上
-                      Edge WebView2 的浏览器进程崩溃（这台机器 GPU/driver 有坑）。
-                      这是最像 WorkBuddy 的跑法。
-    qt                Qt 原生控件兜底。不碰浏览器内核，稳，但"不像 WorkBuddy"，
-                      只在 Chromium 起不来的机器上用。
-    webview           pywebview 开窗口加载 index.html；Windows 上就是 WebView2，
-                      会崩，故不推荐当主形态。
+一种窗口载体 + 一种无窗口：
+    electron（默认）  Electron 壳包 index.html，自带 Chromium（带软件渲染兜底
+                      swiftshader），绕开 Windows 上 Edge WebView2 的浏览器进程崩溃
+                      （这台机器 GPU/driver 有坑）。最像 WorkBuddy 的跑法。
     serve             只起本机 UI 服务、不开窗口，把 URL 交给外部渲染
                       （浏览器 / IDE 预览面板 / 别的 Electron）。
 
@@ -112,16 +108,12 @@ def main() -> None:
         prog="forgeagent-gui", description="ForgeAgent 图形界面（独立窗口）"
     )
     parser.add_argument("--cwd", default=None, help="agentd 的工作目录，默认当前目录")
-    parser.add_argument("--width", type=int, default=1040)
-    parser.add_argument("--height", type=int, default=720)
     parser.add_argument(
         "--mode",
         default=os.environ.get("FORGEAGENT_GUI_MODE", "electron"),
-        choices=("qt", "webview", "electron", "serve"),
-        help="前端载体：electron（推荐，自带 Chromium）/ qt（Qt 原生兜底）/"
-        " webview（HTML 界面，依赖系统 WebView）/ serve（只起服务，不由本进程渲染）",
+        choices=("electron", "serve"),
+        help="前端载体：electron（默认，自带 Chromium 的独立窗口）/ serve（只起服务，交给浏览器等外部渲染）",
     )
-    parser.add_argument("--debug", action="store_true", help="打开 WebView 开发者工具")
     args = parser.parse_args()
 
     if args.mode == "serve":
@@ -130,19 +122,8 @@ def main() -> None:
         run_serve(cwd=args.cwd)
         return
 
-    if args.mode == "electron":
-        _launch_electron(cwd=args.cwd)
-        return
-
-    if args.mode == "qt":
-        from .qt_ui import launch_qt
-
-        launch_qt(cwd=args.cwd)
-        return
-
-    from .window import launch
-
-    launch(cwd=args.cwd, width=args.width, height=args.height, debug=args.debug)
+    # 默认 electron
+    _launch_electron(cwd=args.cwd)
 
 
 if __name__ == "__main__":

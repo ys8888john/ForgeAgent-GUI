@@ -4,10 +4,9 @@
 pywebview 上，结果 WebView2 一崩，整个工具就跟着废了 —— 可从后端看它
 一点毛病都没有。
 
-拆开之后，同一个后端可以有三种载体：
+拆开之后，同一个后端有两种载体：
 
-    qt 模式      自己用 Qt 画控件
-    webview 模式 交给 pywebview 开窗口（Windows = Edge WebView2）
+    electron 模式 交给 Electron 壳开 Chromium 窗口（默认，自带浏览器、最像 WorkBuddy）
     serve 模式   什么都不画，只把 URL 交出去（本文件）
 
 第三种的价值在于：**载体可以换，甚至可以换成一个我们控制不了的壳** ——
