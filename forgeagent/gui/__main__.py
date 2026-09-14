@@ -1,20 +1,57 @@
 """入口：python -m forgeagent.gui（或装完后直接 forgeagent-gui）
 
-两套界面，三种跑法，吃同一个后端（server.py）：
-    qt（默认）      Qt 原生控件，不碰浏览器内核，最稳。
-    webview         HTML 界面（assets/index.html），更漂亮，但依赖系统 WebView。
-                    Windows 上是 Edge WebView2 = Chromium；显卡驱动有问题的机器
-                    上浏览器进程会崩，崩了就用回 qt。
-    serve           只起本机 UI 服务、不自己开任何窗口，把 URL 交给外部去渲染 ——
-                    浏览器、Electron 宿主、IDE 预览面板都行。这是"嵌进别的壳里"的形态。
+前端主形态是 **web（Chromium）** —— 参考 WorkBuddy：WorkBuddy 本身就是个
+Electron 应用，UI 是它自带 Chromium 渲染的 web 页面。所以我们把
+forgeagent/gui/assets/index.html 当成唯一要打磨的产品界面，用 Chromium 渲染它。
 
-    FORGEAGENT_GUI_MODE=webview forgeagent-gui    也能切。
+三种窗口载体 + 一种无窗口：
+    electron（推荐）  Electron 壳包 index.html，自带 Chromium，绕开 Windows 上
+                      Edge WebView2 的浏览器进程崩溃（这台机器 GPU/driver 有坑）。
+                      这是最像 WorkBuddy 的跑法。
+    qt                Qt 原生控件兜底。不碰浏览器内核，稳，但"不像 WorkBuddy"，
+                      只在 Chromium 起不来的机器上用。
+    webview           pywebview 开窗口加载 index.html；Windows 上就是 WebView2，
+                      会崩，故不推荐当主形态。
+    serve             只起本机 UI 服务、不开窗口，把 URL 交给外部渲染
+                      （浏览器 / IDE 预览面板 / 别的 Electron）。
+
+    FORGEAGENT_GUI_MODE=electron forgeagent-gui    也能切。
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def _launch_electron(*, cwd: str | None) -> None:
+    """拉起 electron/ 壳（自带 Chromium 渲染 index.html）。阻塞到窗口关闭。"""
+    electron_dir = Path(__file__).resolve().parent / "electron"
+    if not electron_dir.is_dir():
+        raise SystemExit(f"找不到 Electron 壳目录：{electron_dir}")
+
+    bin_name = "electron.cmd" if os.name == "nt" else "electron"
+    local_bin = electron_dir / "node_modules" / ".bin" / bin_name
+
+    env = dict(os.environ)
+    # 把当前解释器交给 Electron 主进程，它再 spawn `python -m forgeagent.gui --mode serve`
+    # （那个 venv 里装了 agentd；cwd 设到项目根，forgeagent 包才可导入）。
+    env["FORGEAGENT_PYTHON"] = sys.executable
+    if cwd:
+        env["FORGEAGENT_CWD"] = cwd
+
+    if local_bin.exists():
+        cmd = [str(local_bin), str(electron_dir)]
+    else:
+        electron = shutil.which("electron")
+        cmd = [electron, str(electron_dir)] if electron else ["npx", "electron", str(electron_dir)]
+
+    # 阻塞到 Electron 退出（窗口关了才返回），顺便在退出时收掉 Python 后端。
+    subprocess.run(cmd, cwd=str(electron_dir), env=env, check=False)
 
 
 def main() -> None:
@@ -26,9 +63,10 @@ def main() -> None:
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument(
         "--mode",
-        default=os.environ.get("FORGEAGENT_GUI_MODE", "qt"),
-        choices=("qt", "webview", "serve"),
-        help="前端：qt（默认，Qt 原生控件）/ webview（HTML 界面）/ serve（只起服务，不由本进程渲染）",
+        default=os.environ.get("FORGEAGENT_GUI_MODE", "electron"),
+        choices=("qt", "webview", "electron", "serve"),
+        help="前端载体：electron（推荐，自带 Chromium）/ qt（Qt 原生兜底）/"
+        " webview（HTML 界面，依赖系统 WebView）/ serve（只起服务，不由本进程渲染）",
     )
     parser.add_argument("--debug", action="store_true", help="打开 WebView 开发者工具")
     args = parser.parse_args()
@@ -37,6 +75,10 @@ def main() -> None:
         from .serve import run_serve
 
         run_serve(cwd=args.cwd)
+        return
+
+    if args.mode == "electron":
+        _launch_electron(cwd=args.cwd)
         return
 
     if args.mode == "qt":

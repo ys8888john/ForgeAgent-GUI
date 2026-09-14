@@ -6,23 +6,33 @@
 **它不是 agent 的一部分。** 它通过 stdio 把 agentd 当子进程拉起来，用 JSON-RPC 通信——
 跟 Zed、JetBrains 那些客户端是同一个姿势。所以换 UI 不用动内核，换内核不用动 UI。
 
-## 两种形态
+## 形态概览
 
-| | TUI | GUI（默认 qt） | GUI（webview） |
-|---|---|---|---|
-| 启动 | `forgeagent` | `forgeagent-gui` | `forgeagent-gui --mode webview` |
-| 长相 | 终端里的字符界面 | **独立桌面窗口，原生控件** | 独立桌面窗口，HTML 界面 |
-| 依赖 | textual | PySide6（Qt 原生控件） | pywebview（系统自带 WebView） |
+- **TUI**（`forgeagent`）：终端字符界面，依赖 textual。
+- **GUI**：界面本体是同一份 `gui/assets/index.html`（自包含 HTML/CSS/JS，三平台共用），
+  由下面四种**载体**渲染——同一份 HTML，只是"壳"不同：
 
-三者共用同一套协议层（`acp_client.py`）和同一个后端，功能等价。
-换界面不改协议、内核、存储任何一行。
+  | 载体 | 启动 | 渲染 | 依赖 | 定位 |
+  |---|---|---|---|---|
+  | `electron`（默认）| `forgeagent-gui` | **自带 Chromium**（Electron 壳）| Node + `npm i` 装 electron | 主前端，最像 WorkBuddy |
+  | `qt` | `forgeagent-gui --mode qt` | Qt 原生控件 | PySide6 | Chromium 起不来的兜底 |
+  | `webview` | `forgeagent-gui --mode webview` | 系统 WebView（Win=WebView2）| pywebview | 备选，本机会崩则别用 |
+  | `serve` | `forgeagent-gui --mode serve` | 不开窗，只起服务 | 无 | 交给外部（浏览器 / IDE）渲染 |
 
-**为什么默认不是更漂亮的 HTML 那套**：pywebview 在 Windows 上用的是
-Edge WebView2 = Chromium。在显卡驱动 / Hyper-V 有问题的机器上，WebView2 的
+四种载体 + TUI 共用同一套协议层（`acp_client.py`）和同一个后端（HTTP），功能等价。
+换壳不改协议、内核、存储任何一行。
+
+**为什么主前端是 Electron 而不是 pywebview（webview 模式）**：pywebview 在 Windows 上
+用的是 **Edge WebView2 = Chromium**。在显卡驱动 / Hyper-V 有问题的机器上，WebView2 的
 **浏览器进程会直接崩**（报 `The instance of CoreWebView2 is no longer valid
-because the browser process crashed`），症状是窗口能开、页面能加载、
-JS 跑两下就再没动静。Qt 走系统原生控件，不碰浏览器内核，不受影响。
-你机器上 WebView2 正常的话，`--mode webview` 的观感更好。
+because the browser process crashed`），症状是窗口能开、页面能加载、JS 跑两下就再没动静。
+而 Electron 自带一套 Chromium + 软件渲染兜底（swiftshader），对同样的 GPU 问题钝感得多——
+**WorkBuddy 自己就是 Electron 应用，能在崩机王上跑稳，也是同一套道理**。所以我们
+参考 WorkBuddy，把前端定为「Electron 壳包 HTML」的形态。Qt 走系统原生控件、不碰浏览器内核，
+留作极端兜底（仅当 Chromium 都起不来时才用）。
+
+Electron 壳在 `electron/`：先 `npm install` 装好 electron，再 `forgeagent-gui` 即可。
+详见下文「跑起来」。
 
 ### 前端 ↔ Python 走本机 HTTP，不走 pywebview 的 js_api
 
@@ -71,7 +81,12 @@ cd D:\workspace\ForgeAgent-GUI
 <你的 Python> -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev,qt]" -e "D:\workspace\Agentd"
 
-# GUI（独立窗口）
+# 默认前端是 Electron（自带 Chromium，最像 WorkBuddy）。electron 是 Node 包，单独装一次：
+cd electron
+npm install
+cd ..
+
+# GUI（独立窗口，默认 Electron 形态）
 .\.venv\Scripts\python.exe -m forgeagent.gui
 
 # TUI（终端界面）
@@ -108,6 +123,10 @@ python3 -m venv .venv
 ### 跨平台的系统依赖
 
 - **TUI + qt 前端**：纯 pip 依赖，三平台都一样，不需要装系统包。
+- **electron 前端（默认）**：需要 Node.js（含 npm）。一次 `cd electron && npm install`
+  会把 Electron 及其自带 Chromium 装进 `electron/node_modules`，之后 `forgeagent-gui`
+  直接调用，**不依赖系统 WebView**。Chromium 是 Electron 自带、带软件渲染兜底，
+  所以哪怕系统 WebView2 崩机王也能跑（同 WorkBuddy）。
 - **webview 前端**用的是系统自带 WebView —— pywebview 不打包浏览器，
   所以体积小，但系统侧得有东西可用：
 
@@ -144,7 +163,8 @@ webview 模式起不来时可以强制换后端：`FORGEAGENT_GUI=qt forgeagent-
 | `AGENTD_LLM_BACKEND` | 透传给 agentd：`fake` / `ollama` / `openai_compat` | `ollama` |
 | `AGENTD_OLLAMA_MODEL` | 透传给 agentd | `auto`（见下） |
 | `AGENTD_OLLAMA_HOST` | 透传给 agentd | `http://localhost:11434` |
-| `FORGEAGENT_GUI_MODE` | 前端：`qt` / `webview` | `qt` |
+| `FORGEAGENT_GUI_MODE` | 前端载体：`electron` / `qt` / `webview` / `serve` | `electron` |
+| `FORGEAGENT_PYTHON` | electron 模式下拉起 Python 后端的解释器（由 `forgeagent-gui` 自动设为 `sys.executable`）| 系统 `python3` |
 | `FORGEAGENT_GUI` | webview 模式下强制后端：`qt` / `gtk` / `cef` | 自动 |
 | `FORGEAGENT_UI_DEBUG` | 设为 1 时把本机服务的每个请求打到 stderr | 关 |
 
@@ -209,7 +229,9 @@ forgeagent/
     qt_ui.py        Qt 前端（默认）：原生控件，不碰浏览器内核
     window.py       webview 前端：唯一 import webview 的地方
     assets/         HTML 前端（HTML/CSS/JS，无外部依赖、离线可用）
-    __main__.py     GUI 入口（--mode 选前端）
+    __main__.py     GUI 入口（--mode 选前端载体）
+electron/          Electron 壳（main.js + package.json），默认前端载体：
+                  自带 Chromium 渲染 assets/index.html，参考 WorkBuddy 的前端形态
 scripts/
   e2e.py            三跳验证（Ollama / agentd / TUI 界面）
   gui_smoke.py      GUI 冒烟：真开窗口连真 agentd，自动开关（--headless 可不开窗）
@@ -262,7 +284,9 @@ refusal / cancelled` 五种，**没有 error**。agentd 只好把错误塞进 th
 - HTML 前端里的 Markdown 是**自带的极简实现**（标题、粗斜体、列表、行内代码、围栏代码块），
   没引外部库 —— 离线也能用，代价是高亮、表格这些还没做。
   Qt 前端用的是 `QTextBrowser` 自带的 Markdown 渲染（一轮结束后重排）。
-- 单会话，不持久化（跟着内核走，内核做 SQLite 这里才有得存）。
+- 单会话，暂无「继续上次」入口：agentd 内核已经落地 SQLite 持久化
+  （`~/.agentd/sessions.db`，历史跨进程存活，已单测验证），但 GUI 每次启动都开新会话，
+  还没做会话列表 / 续聊 UI。这是下一步要补的（参考 WorkBuddy 的会话侧栏）。
 
 ## 测试
 

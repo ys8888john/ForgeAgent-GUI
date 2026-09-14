@@ -1,0 +1,13 @@
+{
+  "name": "forgeagent-electron",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron shell wrapping forgeagent/gui/assets/index.html (Chromium web UI, like WorkBuddy's frontend)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

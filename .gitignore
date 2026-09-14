@@ -7,3 +7,7 @@ dist/
 venv/
 .pytest_cache/
 .coverage
+
+# Node / Electron（electron/ 是自带 Chromium 的壳，node_modules 与打包产物不进库）
+node_modules/
+electron/dist/
