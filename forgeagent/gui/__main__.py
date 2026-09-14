@@ -28,6 +28,22 @@ import sys
 from pathlib import Path
 
 
+def _find_node_dir() -> str | None:
+    """找 node 可执行文件所在目录，塞进子进程 PATH 让 electron.cmd 能调 `node`。
+
+    electron.cmd 内部用 `node` 起 cli.js；本机 node 往往不在 PATH
+    （只有 WorkBuddy 托管的全路径可用），先 which 一下，没有再兜底去找
+    WorkBuddy 托管 node 的版本目录。
+    """
+    found = shutil.which("node")
+    if found:
+        return os.path.dirname(os.path.abspath(found))
+    candidates = list(Path.home().glob(".workbuddy/binaries/node/versions/*/node.exe"))
+    if candidates:
+        return str(candidates[0].parent)
+    return None
+
+
 def _launch_electron(*, cwd: str | None) -> None:
     """拉起 electron/ 壳（自带 Chromium 渲染 index.html）。阻塞到窗口关闭。"""
     # main.js 用 path.resolve(__dirname, "..") 当 PROJECT_ROOT，所以 electron 壳
@@ -63,6 +79,18 @@ def _launch_electron(*, cwd: str | None) -> None:
     local_bin = electron_dir / "node_modules" / ".bin" / bin_name
 
     env = dict(os.environ)
+    # electron.cmd 内部用 `node` 起 cli.js；本机 node 往往不在 PATH（只有 WorkBuddy
+    # 托管的全路径可用），先把 node 目录塞进 PATH，否则 electron.cmd 报
+    # "node 不是内部或外部命令"。
+    node_dir = _find_node_dir()
+    if node_dir:
+        env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
+    else:
+        print(
+            "警告：PATH 里找不到 node，Electron 可能起不来（需先让 node 可用）。",
+            file=sys.stderr,
+        )
+
     # 把当前解释器交给 Electron 主进程，它再 spawn `python -m forgeagent.gui --mode serve`
     # （那个 venv 里装了 agentd；cwd 设到项目根，forgeagent 包才可导入）。
     env["FORGEAGENT_PYTHON"] = sys.executable
