@@ -302,34 +302,42 @@ protego 一串依赖；装进项目 `.venv` 有和 GUI 自身依赖打架的风�
   python scripts/install_local_mcp.py --install --write \
       --index-url https://pypi.tuna.tsinghua.edu.cn/simple
   ```
-- **`fetch` 探针需要出网，所以"探针错误"默认只算警告。** 实测 `fetch` 探针会报
-  `Failed to fetch robots.txt https://example.com/robots.txt due to a connection issue`
-  （那个子进程的出网被拦），但 server 本身连通、工具列表正常。
-  `verify_local_mcp.py` 因此把两件事分开：**连不上/列不出工具 = 失败（退出码 1）**；
-  **探针返回错误 = 警告（退出码 0）**，要当失败就加 `--strict`。
+- **`fetch` 探针要出网，所以"探针错误"默认只算警告。** 探针那一步是真的去抓一个网页，
+  而 MCP 子进程出网依赖隧道代理 —— 实测它会**间歇性**报
+  `Failed to fetch robots.txt https://example.com/robots.txt due to a connection issue`，
+  而同一时刻 server 本身连通、工具列表完全正常。`verify_local_mcp.py` 因此把两件事分开：
+  **连不上 / 列不出工具 = 失败（退出码 1）**；**探针返回错误 = 警告（退出码 0）**，
+  要当失败就加 `--strict`。
 
 实测输出（本机 2026-09-14）：
 
 ```
 [time]  OK   工具 2 个：convert_time, get_current_time
-             → {"timezone":"Asia/Shanghai","datetime":"2026-09-14T22:40:47+08:00","day_of_week":"Monday",...}
+             → {"timezone":"Asia/Shanghai","datetime":"2026-09-14T23:20:30+08:00","day_of_week":"Monday",...}
 [fetch] OK   工具 1 个：fetch
-             ⚠️ 探针 → [错误] Failed to fetch robots.txt ... connection issue
+             → Contents of https://example.com/: <p>Example Domain</p> # Example Domain This domain is ...
 [git]   OK   工具 12 个：git_add, git_branch, git_checkout, git_commit, git_create_branch,
              git_diff, git_diff_staged, git_diff_unstaged, git_log, git_reset, git_show, git_status
              → Repository status: On branch main ... modified: README.md
 ```
 
+`fetch` 那一行**第一次跑是失败的**（探针报 connection issue，当时就把"探针错误"
+降级成了警告）；同一环境隔一阵再跑就通了。所以那条失败是隧道临时抽风，不是
+"子进程永远出不了网"—— 而"降级成警告"这个设计挡的正是这种抖动。
+
 ### 原生工具与审批
 
 除了 MCP，agentd 还自带一组**进程内**的原生工具（不需要任何配置就可用）：
-`read_file` / `glob` / `grep` / `write_file` / `edit` / `run_command`。
+`read_file` / `glob` / `grep` / `write_file` / `edit` / `run_command`，
+外加两个联网的 `web_search` / `web_fetch`。
 它们和 MCP 工具合并成同一个 tools 数组喂给模型，界面上看起来都是工具卡片。
 
 | 工具 | 卡片标签 | 要审批吗 |
 |---|---|---|
 | `read_file` | 读取 | 否 |
 | `glob` / `grep` | 搜索 | 否 |
+| `web_search` | 搜索 | 否 |
+| `web_fetch` | 获取 | 否 |
 | `write_file` / `edit` | 编辑 | **是** |
 | `run_command` | 执行 | **是** |
 
@@ -341,8 +349,10 @@ agentd 通过 ACP 的 `session/request_permission` 反向请求 GUI，界面弹�
 - 关掉弹窗 / 按 Esc / 超时 = 拒绝，agent 会收到 `[错误] 用户拒绝执行 xxx` 并换条路走，
   整轮对话继续，不会卡住。
 
-只读动作（读/搜）**不弹审批**：每个 `ls` 都弹一次，用户三分钟就学会无脑点允许，
-审批本身也就废了。
+只读动作（读/搜/获取）**不弹审批**：每个 `ls` 都弹一次，用户三分钟就学会无脑点允许，
+审批本身也就废了。联网工具也归在只读这一侧 —— 反正 `read_file` 早就把本机内容交给
+模型了，在"出网"这一步拦不住真正的泄漏路径，只会把弹窗多到没人看（agentd 的
+README 里有完整取舍）。
 
 **不想用 / 想收紧**：这些后端配置直接透传给 agentd：
 
@@ -359,14 +369,24 @@ AGENTD_TOOLS_APPROVE=none forgeagent  # 全放行（仅无人值守场景，慎�
 **不用真模型验这条链路**：
 
 ```bash
-python scripts/native_tools_e2e.py          # 允许：文件真被写出来
-python scripts/native_tools_e2e.py --deny   # 拒绝：文件绝不能存在
+python scripts/native_tools_e2e.py                    # files：允许，文件真被写出来
+python scripts/native_tools_e2e.py --deny             # files：拒绝，文件绝不能存在
+python scripts/native_tools_e2e.py --scenario web     # web：联网工具（离线可跑）
 ```
 
 它给 agentd 塞回放脚本，让"模型"依次调 `read_file` + `glob`（不该弹审批）、
 `write_file`（该弹审批），然后断言：只弹了一次审批、kind 分别是
 read/search/edit、允许时文件真的落盘 / 拒绝时文件绝不存在、拒绝被还原成
 `cancelled` 而不是 `failed`。
+
+`--scenario web` 换一段脚本：`web_search`（`count=2`）→ `web_fetch`，断言
+`kind` 是 `search`/`fetch`、卡片要走成中文标签、`count` 真截断了、HTML 真被剥成
+了纯文本，以及**全程 0 次审批**。
+
+**它是离线跑的**，别被"联网"两个字误导：脚本在自己进程里起一个假的搜索 / 网页
+后端（真 socket、真 HTML 响应），再用 `AGENTD_SEARCH_ENDPOINT` 把 agentd 的搜索
+后端指过去。真正"Bing 的页面结构还认得出来吗"那一问由 agentd 自己的
+`tests/test_web_tools_live.py` 负责（那个才需要出网）。
 
 ### 三跳验证
 
@@ -416,7 +436,8 @@ examples/
 scripts/
   e2e.py            三跳验证（Ollama / agentd / TUI 界面）
   mcp_e2e.py        MCP 端到端验证（不用真模型：script 后端 + 真 stdio MCP server）
-  native_tools_e2e.py  原生工具 + 审批端到端验证（--deny 走拒绝路径）
+  native_tools_e2e.py  原生工具端到端验证：--scenario files（默认，含 --deny 拒绝路径）
+                       / --scenario web（联网搜索/抓取，离线跑本地假后端）
   demo_mcp_gui.py   一键开「能看见工具卡片」的 GUI（不用 Ollama；可选 --serve / --model）
   install_demo_mcp.py  把示例 MCP server 写进 ~/.forgeagent/mcp.json（默认干跑）
   install_local_mcp.py 一键装本地 MCP server（time/fetch/git）+ 写配置（默认干跑）
@@ -428,6 +449,7 @@ tests/
   test_gui_server.py   本机 UI 服务单测：真起 HTTP 服务，真发请求
   test_gui_mcp_config.py  mcp.json 解析单测（含"必填字段不能省"的回归）
   test_mcp_presets.py     本地 MCP 预设单测：venv 路径 / 条目必填字段 / 配置合并
+  test_gui_tool_kinds.py  界面文案单测：每个 ACP kind / status 都得有中文标签
   test_end_to_end.py   真起子进程跑一遍完整握手 + 流式 + 审批往返
   fake_agent.py        假的 ACP agent（含反向请求），端到端测试用
 ```
@@ -510,10 +532,15 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-覆盖协议层、TUI、GUI 桥接层、**GUI 的 HTTP 层**、反向请求（审批）、本地 MCP 预设生成。
+覆盖协议层、TUI、GUI 桥接层、**GUI 的 HTTP 层**、反向请求（审批）、本地 MCP 预设生成，
+以及界面上的 kind / status 文案表（漏一个标签，卡片就安静地显示英文裸词）。
 桥接层和 HTTP 层都用假 client 测，不需要图形环境；真起子进程的端到端验证
 放在 `scripts/` 下手动跑（`e2e.py` / `mcp_e2e.py` / `native_tools_e2e.py`），
-不进 pytest —— 它们依赖 Ollama 或外部仓库，进 CI 只会随机变红。
+不进 pytest —— 它们要么依赖 Ollama，要么依赖"agentd 仓库已装进同一个 venv"
+（`native_tools_e2e.py` 要能 `python -m agentd.server`），进 CI 只会随机变红。
+
+（`native_tools_e2e.py --scenario web` 的**联网**那部分已经改成离线 —— 脚本自带
+本地假后端 —— 但它对 agentd 的依赖没变，所以仍然待在 pytest 外面。）
 
 `test_end_to_end.py` 是例外：它用 `tests/fake_agent.py` 顶替 agentd，
 所以既真起子进程、又不依赖外部仓库，能进 CI。
