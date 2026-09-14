@@ -193,6 +193,20 @@ python scripts/install_demo_mcp.py --write    # 备份已有的 → 写入 demo 
 `command` 会被填成**启动本脚本的那个解释器**（绝对路径）—— 不能写 `python`，
 因为这台机器 PATH 上的 `python` 是微软商店的占位别名，一跑就"未安装 Python"。
 
+**想连窗口一起看（不需要 Ollama、不需要会调工具的模型）**：
+
+```bash
+.\.venv\Scripts\python.exe scripts\demo_mcp_gui.py            # 弹 Electron 窗口
+.\.venv\Scripts\python.exe scripts\demo_mcp_gui.py --serve    # 只起服务，打印 URL 自己开
+.\.venv\Scripts\python.exe scripts\demo_mcp_gui.py --model ollama   # 换成真模型（需 ollama serve）
+```
+
+它做的事：写一份**临时** `mcp.json`（指向 `examples/echo_mcp_server.py`，不动你
+`~/.forgeagent` 里的真配置）、把后端设成 `AGENTD_LLM_BACKEND=script` + 一段剧本
+（第 1 步要调 `demo__echo`、第 2 步出正文）、把会话存储设成 memory（不写你的
+`~/.agentd`），然后照常起 GUI。发任意一句话就能看到一张**真的**工具卡片，
+输出是示例 MCP server 真的返回的。
+
 配好之后直接聊：模型如果决定调工具，界面上会出现**工具卡片**（一次调用一张，
 状态从"运行中"变"完成/失败"，下面是工具的真实输出）。没有工具调用时和普通对话
 完全一样。
@@ -265,6 +279,7 @@ examples/
 scripts/
   e2e.py            三跳验证（Ollama / agentd / TUI 界面）
   mcp_e2e.py        MCP 端到端验证（不用真模型：script 后端 + 真 stdio MCP server）
+  demo_mcp_gui.py   一键开「能看见工具卡片」的 GUI（不用 Ollama；可选 --serve / --model）
   install_demo_mcp.py  把示例 MCP server 写进 ~/.forgeagent/mcp.json（默认干跑）
 tests/
   test_acp_client.py   reducer 单测，不用起进程
