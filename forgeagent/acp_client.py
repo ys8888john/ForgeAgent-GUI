@@ -180,8 +180,17 @@ class AcpClient:
         self._stderr_reader = asyncio.create_task(self._read_stderr())
 
         await self._call(M_INIT, {"protocolVersion": PROTOCOL_VERSION})
+        await self.new_session()
+
+    async def new_session(self) -> str:
+        """开一个全新的 agentd 会话，把拿到的 sessionId 记下来。
+
+        单独抽出来是因为 GUI 的「新对话」按钮也要开新会话，但那一步发生在
+        initialize 握手之后、用户点了按钮才触发，不能和 start() 绑死。
+        """
         resp = await self._call(M_NEW, {"cwd": self._cwd, "mcpServers": []})
         self.session_id = resp["result"]["sessionId"]
+        return self.session_id
 
     async def close(self) -> None:
         """收摊：停掉后台读取任务，终止子进程。"""

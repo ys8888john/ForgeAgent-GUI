@@ -34,6 +34,54 @@
     flex-direction: column;
   }
 
+  /* 左右两栏：侧栏（会话列表）+ 主聊天区 */
+  #app { display: flex; flex: 1 1 auto; min-height: 0; }
+
+  #sidebar {
+    flex: 0 0 264px; width: 264px;
+    border-right: 1px solid var(--border);
+    background: var(--bg-soft);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  /* 生成中时整个侧栏不可点，防止"切到一半又发消息"把历史写乱 */
+  body.busy #sidebar { pointer-events: none; opacity: .6; }
+  #sidebar-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+  }
+  #sidebar-head .sb-title { font-weight: 600; font-size: 13px; }
+  #sidebar-head #new-chat {
+    font-size: 12px; padding: 3px 9px; color: var(--accent); border-color: var(--accent);
+  }
+  #sidebar-head #new-chat:hover { background: #e8f0fe; }
+  #session-list {
+    flex: 1 1 auto; overflow-y: auto; padding: 8px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .si-empty { color: var(--text-dim); font-size: 12px; padding: 12px 6px; }
+  .session-item {
+    text-align: left; width: 100%; background: transparent;
+    border: 1px solid transparent; border-radius: 8px; padding: 8px 10px;
+    cursor: pointer; display: flex; flex-direction: column; gap: 3px;
+  }
+  .session-item:hover { background: #eceef1; }
+  .session-item.active { background: #e8f0fe; border-color: var(--user-border); }
+  .si-title {
+    font-size: 13px; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .si-meta { display: flex; gap: 8px; font-size: 11px; color: var(--text-dim); }
+  .si-preview {
+    font-size: 12px; color: var(--text-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #sidebar-foot {
+    padding: 8px 12px; border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text-dim); flex: 0 0 auto;
+  }
+
+  #main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
   header {
     display: flex;
     align-items: center;
@@ -132,24 +180,37 @@
 </head>
 <body>
 
-<header>
-  <h1>ForgeAgent</h1>
-  <span id="status"><span id="dot"></span><span id="status-text">启动中…</span></span>
-  <span class="spacer"></span>
-  <button id="log-btn">agent 日志</button>
-</header>
+<div id="app">
+  <aside id="sidebar">
+    <div id="sidebar-head">
+      <span class="sb-title">会话</span>
+      <button id="new-chat" title="开一个全新对话">+ 新对话</button>
+    </div>
+    <div id="session-list"></div>
+    <div id="sidebar-foot">ForgeAgent · 本地运行</div>
+  </aside>
 
-<div id="messages"></div>
+  <main id="main">
+    <header>
+      <h1>ForgeAgent</h1>
+      <span id="status"><span id="dot"></span><span id="status-text">启动中…</span></span>
+      <span class="spacer"></span>
+      <button id="log-btn">agent 日志</button>
+    </header>
 
-<div id="composer">
-  <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
-  <button id="send">发送</button>
-</div>
-<div class="hint">Ctrl/Cmd + L 看日志　·　Ctrl/Cmd + Enter 发送</div>
+    <div id="messages"></div>
 
-<div id="log-pane">
-  <div class="bar"><button id="log-close">关闭</button></div>
-  <div id="log-body"></div>
+    <div id="composer">
+      <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button id="send">发送</button>
+    </div>
+    <div class="hint">Ctrl/Cmd + L 看日志　·　Ctrl/Cmd + Enter 发送　·　点左侧会话可续聊</div>
+
+    <div id="log-pane">
+      <div class="bar"><button id="log-close">关闭</button></div>
+      <div id="log-body"></div>
+    </div>
+  </main>
 </div>
 
 <script>
@@ -169,6 +230,7 @@
   var autoScroll = true;
   var logTimer = null;
   var started = false;
+  var activeSession = null;  // 当前所在的会话 id（null = 还没切过）
 
   // ---- 跟本机 Python 进程通信 ----
   //
@@ -286,6 +348,12 @@
     statusText.textContent = text;
   }
 
+  // 把「生成中」状态同步到侧栏（生成时禁点，防历史写乱）
+  function setBusy(v) {
+    busy = v;
+    document.body.classList.toggle("busy", v);
+  }
+
   // ---- 自报状态 ----
   //
   // 为什么要这套：想从外面验证「界面到底渲染出来没有」，
@@ -352,6 +420,138 @@
     if (autoScroll) scrollToBottom();
   }
 
+  // 历史记录是静态的，一次性画出来（不走流式）
+  function addStaticBubble(role, text) {
+    var el = document.createElement("div");
+    el.className = "bubble " + (role === "user" ? "user" : "assistant");
+    el.innerHTML = renderMd(text || "");
+    messages.appendChild(el);
+  }
+
+  // ---- 会话侧栏：列表 / 续聊 / 新对话 ----
+
+  function formatTime(ts) {
+    if (!ts) return "";
+    var d = new Date(ts * 1000);
+    var diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < 60) return "刚刚";
+    if (diff < 3600) return Math.floor(diff / 60) + " 分钟前";
+    if (diff < 86400) return Math.floor(diff / 3600) + " 小时前";
+    var p = function (n) { return ("0" + n).slice(-2); };
+    var y = d.getFullYear(), thisYear = new Date().getFullYear();
+    return (y === thisYear ? "" : y + "-") + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+           " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+
+  function renderSessions(list) {
+    var box = document.getElementById("session-list");
+    box.innerHTML = "";
+    // 还没消息的空会话不占地方（开始自动建的那一个、点了「新对话」还没发的那一个）
+    var items = (list || []).filter(function (s) { return (s.msg_count || 0) > 0; });
+    if (!items.length) {
+      var empty = document.createElement("div");
+      empty.className = "si-empty";
+      empty.textContent = "（暂无历史会话）";
+      box.appendChild(empty);
+      return;
+    }
+    items.forEach(function (s) {
+      var b = document.createElement("button");
+      b.className = "session-item" + (s.id === activeSession ? " active" : "");
+      b.dataset.id = s.id;
+
+      var title = document.createElement("div");
+      title.className = "si-title";
+      title.textContent = s.title || "（空会话）";
+
+      var meta = document.createElement("div");
+      meta.className = "si-meta";
+      var t = document.createElement("span");
+      t.className = "si-time";
+      t.textContent = formatTime(s.created_at);
+      var c = document.createElement("span");
+      c.className = "si-count";
+      c.textContent = (s.msg_count || 0) + " 条";
+      meta.appendChild(t); meta.appendChild(c);
+
+      var prev = document.createElement("div");
+      prev.className = "si-preview";
+      prev.textContent = s.preview || "";
+
+      b.appendChild(title); b.appendChild(meta); b.appendChild(prev);
+      b.addEventListener("click", function () { resumeSession(s.id); });
+      box.appendChild(b);
+    });
+  }
+
+  function setActive(id) {
+    var items = document.querySelectorAll("#session-list .session-item");
+    for (var i = 0; i < items.length; i++) {
+      items[i].classList.toggle("active", items[i].dataset.id === id);
+    }
+  }
+
+  async function loadSessions() {
+    if (!started) return;
+    try {
+      var res = await api("/api/sessions");
+      renderSessions(res.sessions || []);
+    } catch (e) { /* 侧栏挂了不影响主聊天 */ }
+  }
+
+  function renderHistory(history) {
+    messages.innerHTML = "";
+    current = null;
+    (history || []).forEach(function (m) {
+      addStaticBubble(m.role, m.content || "");
+    });
+    if (autoScroll) scrollToBottom();
+  }
+
+  async function resumeSession(id) {
+    if (busy || !started) return;
+    try {
+      var r = await api("/api/session/resume", { method: "POST", body: { session_id: id } });
+      if (!r.ok) { showErrorBubble("载入失败", r.error || "未知错误"); return; }
+      activeSession = id;
+      var h = await api("/api/session/" + encodeURIComponent(id));
+      renderHistory(h.history || []);
+      setActive(id);
+      setStatus("ready", "已载入会话 " + id.slice(0, 8) + "（可继续聊）");
+      loadSessions();
+      input.focus();
+      report();
+    } catch (e) {
+      showErrorBubble("载入会话失败", String(e && e.message ? e.message : e));
+    }
+  }
+
+  async function newChat() {
+    if (busy || !started) return;
+    try {
+      var r = await api("/api/session/new", { method: "POST", body: {} });
+      if (!r.ok) { showErrorBubble("开新对话失败", r.error || "未知错误"); return; }
+      activeSession = r.session;
+      current = null;
+      messages.innerHTML = "";
+      setActive(r.session);
+      setStatus("ready", "新会话 " + (r.session || "").slice(0, 8));
+      loadSessions();
+      input.focus();
+      report();
+    } catch (e) {
+      showErrorBubble("开新对话失败", String(e && e.message ? e.message : e));
+    }
+  }
+
+  function showErrorBubble(label, text) {
+    var b = newBubble("error", label);
+    appendText(b, text);
+    b = null;
+  }
+
+  document.getElementById("new-chat").addEventListener("click", newChat);
+
   // ---- 事件处理 ----
 
   function handle(ev) {
@@ -374,7 +574,7 @@
       var b = newBubble("user");
       b.textContent = ev.text;
       if (autoScroll) scrollToBottom();
-      busy = true;
+      setBusy(true);
       sendBtn.disabled = true;
       setStatus("connecting", "生成中…");
       report();
@@ -397,11 +597,12 @@
         current.dataset.raw = current.dataset.raw; // 保持不变
         current = null;
       }
-      busy = false;
+      setBusy(false);
       sendBtn.disabled = false;
       setStatus("ready", ev.error ? "出错了（看日志）" : ("stop=" + (ev.stop || "?")));
       input.focus();
       report();
+      loadSessions();  // 本轮落库了，侧栏里这个新会话该出现了
       return;
     }
   }
@@ -527,6 +728,7 @@
       } catch (e) {
         reportFatal("bootstrap", e);
       }
+      loadSessions();        // 把历史会话填进侧栏
       pump();
     },
     function () {

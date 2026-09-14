@@ -51,6 +51,11 @@ class _FakeClient:
     async def close(self) -> None:
         self.closed = True
 
+    async def new_session(self) -> str:
+        # 给 Bridge.new_session 用的假实现：记下一个新 id 即可
+        self.session_id = "sess_new789012"
+        return self.session_id
+
     async def prompt(self, text: str):
         if self._fail_prompt:
             raise RuntimeError("prompt 炸了")

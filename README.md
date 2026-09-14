@@ -284,9 +284,14 @@ refusal / cancelled` 五种，**没有 error**。agentd 只好把错误塞进 th
 - HTML 前端里的 Markdown 是**自带的极简实现**（标题、粗斜体、列表、行内代码、围栏代码块），
   没引外部库 —— 离线也能用，代价是高亮、表格这些还没做。
   Qt 前端用的是 `QTextBrowser` 自带的 Markdown 渲染（一轮结束后重排）。
-- 单会话，暂无「继续上次」入口：agentd 内核已经落地 SQLite 持久化
-  （`~/.agentd/sessions.db`，历史跨进程存活，已单测验证），但 GUI 每次启动都开新会话，
-  还没做会话列表 / 续聊 UI。这是下一步要补的（参考 WorkBuddy 的会话侧栏）。
+- **会话侧栏 / 续聊已可用**（参考 WorkBuddy 的会话侧栏）：
+  左侧栏列出 `~/.agentd/sessions.db` 里的历史会话（标题、最近时间、条数、末条预览），
+  点一下即「续聊」。agentd 内核在每轮 `handle()` 开头会把整段历史 load 进上下文
+  （`agentd/kernel/kernel.py:95`），所以 GUI 只要复用旧 `sessionId`、不去调 `session/new`，
+  LLM 自然就接着上次聊；「+ 新对话」则走 ACP `session/new` 开干净会话。
+  GUI 只读那一份 SQLite 库（另开 read-only 连接，WAL 并发读不冲突），不碰写方。
+  后端接口：`GET /api/sessions`、`GET /api/session/<id>`、`POST /api/session/resume`、
+  `POST /api/session/new`。
 
 ## 测试
 

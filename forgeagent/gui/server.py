@@ -32,6 +32,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .bridge import Bridge
+from .sessions import SessionsSource
 
 ASSETS = Path(__file__).parent / "assets"
 
@@ -58,8 +59,12 @@ class UiServer:
         command: list[str] | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
+        sessions: SessionsSource | None = None,
     ) -> None:
         self.bridge = bridge if bridge is not None else Bridge(cwd=cwd, command=command)
+        # 会话库只读视图：默认读 agentd 的 SQLite（~/.agentd/sessions.db）。
+        # 测试可注入假的，完全不碰磁盘。
+        self.sessions = sessions if sessions is not None else SessionsSource()
         self.token = secrets.token_hex(16)
         self._host = host
         self._httpd = ThreadingHTTPServer((host, port), _Handler)
@@ -227,6 +232,20 @@ class _Handler(BaseHTTPRequestHandler):
             bridge.push_command(body if isinstance(body, dict) else {})
             return self._json({"ok": True})
 
+        # ---- 会话：新对话 / 续聊 ----
+        # 续聊前先确认 id 真在库里（拿着只读视图查），再让 bridge 切换 sessionId；
+        # 这样即使前端传个瞎编的 id，也不会悄悄把后续消息写进一个幽灵会话。
+        if u.path == "/api/session/resume":
+            sid = str(body.get("session_id") or "")
+            if not sid:
+                return self._fail(400, "缺少 session_id")
+            if not self._owner.sessions.exists(sid):
+                return self._fail(404, f"没有这个会话: {sid}")
+            return self._json(bridge.resume_session(sid))
+
+        if u.path == "/api/session/new":
+            return self._json(bridge.new_session())
+
         self._fail(404, f"没有这个接口: {u.path}")
 
     def _api_get(self, path: str, q: dict) -> None:
@@ -234,6 +253,22 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/hello":
             return self._json({"ok": True, "token_ok": True})
+
+        # ---- 会话侧栏 / 续聊 ----
+        # /api/sessions        列出已有会话（侧栏用）
+        # /api/session/<id>    某会话完整历史（点开看 / 续聊前先画出来）
+        # 注意：/api/session/new 和 /api/session/resume 是 POST，不在这里处理。
+        if path == "/api/sessions":
+            return self._json({"ok": True, "sessions": self._owner.sessions.list_meta()})
+
+        if path.startswith("/api/session/"):
+            sid = path[len("/api/session/"):]
+            if not sid:
+                return self._fail(400, "缺少 session_id")
+            hist = self._owner.sessions.get_history(sid)
+            if hist is None:
+                return self._fail(404, f"没有这个会话: {sid}")
+            return self._json({"ok": True, "history": hist})
 
         if path == "/api/events":
             try:

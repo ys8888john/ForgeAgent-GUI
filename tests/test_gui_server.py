@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from forgeagent.gui.bridge import Bridge
@@ -126,3 +128,124 @@ def test_unknown_path_is_404(server):
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=5)
     assert exc.value.code == 404
+
+
+# ---- 会话侧栏 / 续聊 ----
+
+class _FakeSessions:
+    """agentd 会话库的只读视图替身，塞给 UiServer，完全不碰磁盘。"""
+
+    def __init__(self, *, sessions=None, history=None, exists=True):
+        self._sessions = sessions or []
+        self._history = history or []
+        self._exists = exists
+
+    def list_meta(self):
+        return self._sessions
+
+    def get_history(self, session_id: str):
+        return self._history if self._exists else None
+
+    def exists(self, session_id: str):
+        return self._exists
+
+
+def _server_with(sessions) -> UiServer:
+    return UiServer(bridge=Bridge(client=_FakeClient()), sessions=sessions).start()
+
+
+def test_sessions_endpoint_lists_and_requires_token():
+    import urllib.error
+    import urllib.request
+
+    fake = _FakeSessions(sessions=[{"id": "s1", "created_at": 1.0, "msg_count": 3}])
+    srv = _server_with(fake)
+    try:
+        # 没 token 必须 401
+        req = urllib.request.Request(f"http://127.0.0.1:{srv.port}/api/sessions")
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc.value.code == 401
+        # 有 token 返回列表
+        assert srv.client().get("/api/sessions")["sessions"] == [
+            {"id": "s1", "created_at": 1.0, "msg_count": 3}
+        ]
+    finally:
+        srv.stop()
+
+
+def test_session_history_endpoint_returns_history_or_404():
+    fake = _FakeSessions(
+        history=[{"role": "user", "name": None, "content": "hi"}]
+    )
+    srv = _server_with(fake)
+    try:
+        hist = srv.client().get("/api/session/s1")["history"]
+        assert hist == [{"role": "user", "name": None, "content": "hi"}]
+
+        # 库里没有这个 id -> 404
+        missing = _FakeSessions(exists=False)
+        srv2 = _server_with(missing)
+        try:
+            import urllib.error
+            import urllib.request
+
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{srv2.port}/api/session/nope",
+                headers={"X-ForgeAgent-Token": srv2.token},
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(req, timeout=5)
+            assert exc.value.code == 404
+        finally:
+            srv2.stop()
+    finally:
+        srv.stop()
+
+
+def test_session_resume_switches_client_session():
+    """续聊：校验 id 存在后，bridge 把 client 的 sessionId 换成旧的。"""
+    fake = _FakeSessions(exists=True)
+    srv = _server_with(fake)
+    try:
+        res = srv.client().post("/api/session/resume", {"session_id": "old_session"})
+        assert res["ok"] is True
+        assert res["session"] == "old_session"
+        # 关键：client 的 sessionId 真的被换掉了，后续 send 才会接着旧上下文
+        assert srv.bridge._client.session_id == "old_session"
+    finally:
+        srv.stop()
+
+
+def test_session_resume_rejects_unknown_id():
+    import urllib.error
+    import urllib.request
+
+    fake = _FakeSessions(exists=False)
+    srv = _server_with(fake)
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{srv.port}/api/session/resume",
+            data=json.dumps({"session_id": "ghost"}).encode("utf-8"),
+            method="POST",
+            headers={"X-ForgeAgent-Token": srv.token, "Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc.value.code == 404
+    finally:
+        srv.stop()
+
+
+def test_session_new_creates_fresh_session():
+    """新对话：bridge.new_session 走 ACP session/new，记下新 id。"""
+    fake = _FakeSessions()
+    srv = _server_with(fake)
+    try:
+        res = srv.client().post("/api/session/new", {})
+        assert res["ok"] is True
+        assert res["session"] == "sess_new789012"
+        assert srv.bridge._client.session_id == "sess_new789012"
+    finally:
+        srv.stop()
+

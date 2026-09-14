@@ -93,6 +93,48 @@ class Bridge:
         )
         return {"ok": True, "session": self._client.session_id}
 
+    def new_session(self) -> dict:
+        """开一个全新的 agentd 会话（对应 GUI 的「新对话」按钮）。
+
+        走 ACP 的 session/new，拿到新 id 记到 client 上；后续 send 都用它。
+        同步阻塞（由窗口层派发到线程池，不卡界面）。
+        """
+        if self._closed.is_set():
+            return {"ok": False, "error": "已关闭"}
+        try:
+            sid = self._submit(self._client.new_session()).result(timeout=30)
+        except Exception as exc:  # noqa: BLE001 - 边界处统一转成错误
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        self._busy = False
+        self._emit(
+            type="status",
+            state="ready",
+            message=f"新会话 {sid[:8]}",
+        )
+        return {"ok": True, "session": sid}
+
+    def resume_session(self, session_id: str) -> dict:
+        """续聊一个已有会话：**不**再开新会话，直接把 client 的 sessionId 换成旧的。
+
+        为什么这样就够：agentd 内核在每次 handle() 开头都会从 SQLite 把整个历史
+        load 进上下文（kernel/handle.py），所以只要 prompt 用的是旧 id，
+        LLM 自然就接着上次的上下文聊——"续聊"在 agentd 侧本就免费，GUI 只需
+        别去调 session/new、复用旧 id 即可。存在性校验在 server 层做（它握有
+        会话库只读视图），这里只管切换。
+        """
+        if self._closed.is_set():
+            return {"ok": False, "error": "已关闭"}
+        if not session_id:
+            return {"ok": False, "error": "缺少 session_id"}
+        self._client.session_id = session_id
+        self._busy = False
+        self._emit(
+            type="status",
+            state="ready",
+            message=f"已载入会话 {session_id[:8]}（可继续聊）",
+        )
+        return {"ok": True, "session": session_id}
+
     def send(self, text: str) -> dict:
         """发一轮。立即返回，真正的流式在后台线程跑。"""
         text = (text or "").strip()
