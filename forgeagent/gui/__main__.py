@@ -30,9 +30,32 @@ from pathlib import Path
 
 def _launch_electron(*, cwd: str | None) -> None:
     """拉起 electron/ 壳（自带 Chromium 渲染 index.html）。阻塞到窗口关闭。"""
-    electron_dir = Path(__file__).resolve().parent / "electron"
-    if not electron_dir.is_dir():
-        raise SystemExit(f"找不到 Electron 壳目录：{electron_dir}")
+    # main.js 用 path.resolve(__dirname, "..") 当 PROJECT_ROOT，所以 electron 壳
+    # 应放在项目根（D:\workspace\ForgeAgent-GUI\electron）。这里优先项目根，
+    # 也兼容旧布局 forgeagent/gui/electron。
+    gui_dir = Path(__file__).resolve().parent  # .../forgeagent/gui
+    project_root = gui_dir.parent.parent  # .../ForgeAgent-GUI
+    candidates = [project_root / "electron", gui_dir / "electron"]
+    electron_dir = next((p for p in candidates if p.is_dir()), None)
+    if electron_dir is None:
+        raise SystemExit(
+            "找不到 Electron 壳目录：试过 " + " 和 ".join(str(p) for p in candidates)
+        )
+
+    # electron 包本体（含 Chromium 二进制）可能没装完整：npm install 的 postinstall
+    # 要额外下载 Chromium，被网络挡住时只会留下 .bin 里的悬空 shim，跑起来报
+    # "Cannot find module electron"。这里先点破，省得人去猜。
+    electron_pkg = electron_dir / "node_modules" / "electron"
+    if not electron_pkg.is_dir():
+        raise SystemExit(
+            f"Electron 包没装完整（缺 {electron_pkg}）。先装依赖：\n"
+            f"  cd {electron_dir}\n"
+            f'  "C:\\Users\\Administrator\\.workbuddy\\binaries\\node\\versions\\22.22.2-3\\node.exe" '
+            f'..\\node_modules\\.bin\\npm.cmd install\n'
+            f"若 Chromium 下载被墙，设镜像重试：\n"
+            f"  $env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'; "
+            f'..\\node_modules\\.bin\\npm.cmd install'
+        )
 
     bin_name = "electron.cmd" if os.name == "nt" else "electron"
     local_bin = electron_dir / "node_modules" / ".bin" / bin_name
