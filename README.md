@@ -234,6 +234,92 @@ server → 工具事件回灌成界面 reducer 认识的 `Turn.tools`。
    dict 就会静默跳过，日志还说"接入了 1 个 server"却一个工具都列不出来。
    `McpHub` 现在两种形态都吃。
 
+#### 本地 MCP 预设（time / fetch / git 一键装）
+
+上面的 `install_demo_mcp.py` 装的是仓库自带的 echo 示例。想用**真**的通用 server，
+用这个（同样默认干跑）：
+
+```bash
+python scripts/install_local_mcp.py --list              # 看有哪些预设
+python scripts/install_local_mcp.py                     # 干跑：看计划和将要写的内容
+python scripts/install_local_mcp.py --install --write   # 真装（建 venv + pip）+ 真写配置
+python scripts/verify_local_mcp.py                      # 验证：真连一遍、真调一次探针
+```
+
+| 预设 | pip 包 | 用途 | 备注 |
+|---|---|---|---|
+| `time` | `mcp-server-time` | 时间/时区换算、时间加减 | |
+| `fetch` | `mcp-server-fetch` | 抓网页转 markdown | |
+| `git` | `mcp-server-git` | git status / log / diff / show | 需要 PATH 上有 git（见下） |
+
+生成的 `mcp.json` 长这样（`command` 是**专用 venv 的解释器绝对路径**，不是 `python`）：
+
+```json
+{
+  "mcpServers": {
+    "time": {
+      "command": "C:\\Users\\<you>\\.forgeagent\\mcp-venv\\Scripts\\python.exe",
+      "args": ["-m", "mcp_server_time"]
+    },
+    "git": {
+      "command": "C:\\Users\\<you>\\.forgeagent\\mcp-venv\\Scripts\\python.exe",
+      "args": ["-m", "mcp_server_git"],
+      "env": { "PATH": "<git 目录>;<原来的 PATH>" }
+    }
+  }
+}
+```
+
+**为什么不照抄网上的写法。** 主流教程写 `"command": "uvx"`（Python server）或
+`"command": "npx"`（Node server）。这两种在这台机器上都跑不起来：没有 `uv`/`uvx`；
+`npx` 那条被沙箱安全策略直接拦掉（`npm view` 报 `ACCESS_DENIED`）。所以改成
+「装进一个专用 venv，`command` 指它的解释器绝对路径，`args` 用 `-m <模块>`」。
+
+**为什么单独一个 venv。** `mcp-server-fetch` 会拖进 httpx / readabilipy / markdownify /
+protego 一串依赖；装进项目 `.venv` 有和 GUI 自身依赖打架的风险（测试基线会飘）。
+专用 venv 放在 `~/.forgeagent/mcp-venv`，和 `mcp.json` 同目录，互不干扰。
+
+**为什么没有 filesystem 预设。** agentd 的原生工具
+（`read_file`/`glob`/`grep`/`write_file`/`edit`）已经把本地文件操作覆盖了；
+再加一个 filesystem MCP server，只是让模型多一个选择、多一次审批往返，是负收益。
+
+**git 那条为什么带 `env.PATH`。** MCP SDK 的 stdio 客户端把子进程环境算成
+`get_default_environment() | (server.env or {})` —— `PATH` 本来就在默认继承的白名单里，
+所以普通 server **不需要**写 `env`。git 是例外：这台机器上 `git` 不在 PATH 上
+（只在 `~/.workbuddy/binaries/PortableGit/*/cmd/`），不把它拼进 PATH，
+`mcp-server-git` fork 出去的 `git` 子进程会直接找不到。安装脚本会自动探测并写进去。
+
+**验证脚本为什么复用 agentd 的 `McpHub`。** 要验的就是 agentd 实际走的那条路
+（连接方式、env 合并规则、`{server}__{tool}` 前缀规则）。自己另写一份精简 MCP 客户端，
+很容易"验过了但跑起来还是不通"。
+
+**两个本机实测到的坑：**
+
+- **默认 PyPI 源会被沙箱隧道 502。** 实测 `pip install` 走默认源一直报
+  `Tunnel connection failed: 502 Bad Gateway`，换清华源立刻就装上了。
+  脚本把这个开关透传给 pip（默认不指定，跟 pip 自身配置走）：
+  ```bash
+  python scripts/install_local_mcp.py --install --write \
+      --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+  ```
+- **`fetch` 探针需要出网，所以"探针错误"默认只算警告。** 实测 `fetch` 探针会报
+  `Failed to fetch robots.txt https://example.com/robots.txt due to a connection issue`
+  （那个子进程的出网被拦），但 server 本身连通、工具列表正常。
+  `verify_local_mcp.py` 因此把两件事分开：**连不上/列不出工具 = 失败（退出码 1）**；
+  **探针返回错误 = 警告（退出码 0）**，要当失败就加 `--strict`。
+
+实测输出（本机 2026-09-14）：
+
+```
+[time]  OK   工具 2 个：convert_time, get_current_time
+             → {"timezone":"Asia/Shanghai","datetime":"2026-09-14T22:40:47+08:00","day_of_week":"Monday",...}
+[fetch] OK   工具 1 个：fetch
+             ⚠️ 探针 → [错误] Failed to fetch robots.txt ... connection issue
+[git]   OK   工具 12 个：git_add, git_branch, git_checkout, git_commit, git_create_branch,
+             git_diff, git_diff_staged, git_diff_unstaged, git_log, git_reset, git_show, git_status
+             → Repository status: On branch main ... modified: README.md
+```
+
 ### 原生工具与审批
 
 除了 MCP，agentd 还自带一组**进程内**的原生工具（不需要任何配置就可用）：
@@ -320,6 +406,7 @@ forgeagent/
     bridge.py       桥接层：纯 Python，不依赖任何 GUI 库，可脱离 GUI 单测
     server.py       本机 UI 服务：bridge 的 HTTP 封装 + 静态页面（含 token 校验）
     mcp_config.py   读 mcp.json → 转成 ACP session/new 要的 mcpServers 结构
+    mcp_presets.py  本地 MCP server 预设：venv 路径推断 / 条目生成 / 配置合并
     assets/         HTML 前端（HTML/CSS/JS，无外部依赖、离线可用）
     __main__.py     GUI 入口（--mode 选前端载体）
 electron/          Electron 壳（main.js + package.json），默认前端载体：
@@ -332,12 +419,15 @@ scripts/
   native_tools_e2e.py  原生工具 + 审批端到端验证（--deny 走拒绝路径）
   demo_mcp_gui.py   一键开「能看见工具卡片」的 GUI（不用 Ollama；可选 --serve / --model）
   install_demo_mcp.py  把示例 MCP server 写进 ~/.forgeagent/mcp.json（默认干跑）
+  install_local_mcp.py 一键装本地 MCP server（time/fetch/git）+ 写配置（默认干跑）
+  verify_local_mcp.py  验证本地 MCP server：复用 agentd 的 McpHub 真连 + 真调探针
 tests/
   test_acp_client.py   reducer 单测 + 反向请求（审批）单测，不用起进程
   test_app.py          TUI 冒烟（headless）
   test_gui_bridge.py   桥接层单测（注入假 client，无需图形环境）
   test_gui_server.py   本机 UI 服务单测：真起 HTTP 服务，真发请求
   test_gui_mcp_config.py  mcp.json 解析单测（含"必填字段不能省"的回归）
+  test_mcp_presets.py     本地 MCP 预设单测：venv 路径 / 条目必填字段 / 配置合并
   test_end_to_end.py   真起子进程跑一遍完整握手 + 流式 + 审批往返
   fake_agent.py        假的 ACP agent（含反向请求），端到端测试用
 ```
@@ -420,7 +510,7 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-覆盖协议层、TUI、GUI 桥接层、**GUI 的 HTTP 层**、反向请求（审批）。
+覆盖协议层、TUI、GUI 桥接层、**GUI 的 HTTP 层**、反向请求（审批）、本地 MCP 预设生成。
 桥接层和 HTTP 层都用假 client 测，不需要图形环境；真起子进程的端到端验证
 放在 `scripts/` 下手动跑（`e2e.py` / `mcp_e2e.py` / `native_tools_e2e.py`），
 不进 pytest —— 它们依赖 Ollama 或外部仓库，进 CI 只会随机变红。
