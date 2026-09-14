@@ -32,6 +32,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .bridge import Bridge
+from .mcp_config import config_path, load_mcp_servers
 from .sessions import SessionsSource
 
 ASSETS = Path(__file__).parent / "assets"
@@ -60,8 +61,14 @@ class UiServer:
         host: str = "127.0.0.1",
         port: int = 0,
         sessions: SessionsSource | None = None,
+        mcp_servers: list[dict] | None = None,
     ) -> None:
-        self.bridge = bridge if bridge is not None else Bridge(cwd=cwd, command=command)
+        # MCP server 配置：默认从 ~/.forgeagent/mcp.json 读（没有就是空），
+        # 在 session/new 时交给 agentd。
+        self.mcp_servers = load_mcp_servers() if mcp_servers is None else mcp_servers
+        self.bridge = bridge if bridge is not None else Bridge(
+            cwd=cwd, command=command, mcp_servers=self.mcp_servers
+        )
         # 会话库只读视图：默认读 agentd 的 SQLite（~/.agentd/sessions.db）。
         # 测试可注入假的，完全不碰磁盘。
         self.sessions = sessions if sessions is not None else SessionsSource()
@@ -253,6 +260,18 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/hello":
             return self._json({"ok": True, "token_ok": True})
+
+        # 本机 MCP 配置摘要（侧栏/状态区显示连了几个 server）
+        if path == "/api/mcp":
+            servers = self._owner.mcp_servers
+            return self._json(
+                {
+                    "ok": True,
+                    "path": str(config_path()),
+                    "count": len(servers),
+                    "servers": [s.get("name") for s in servers],
+                }
+            )
 
         # ---- 会话侧栏 / 续聊 ----
         # /api/sessions        列出已有会话（侧栏用）

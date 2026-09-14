@@ -67,11 +67,63 @@ def test_user_message_chunk_is_not_echoed():
 
 
 def test_unknown_kind_is_recorded_not_lost():
-    # 工具调用/计划这类事件内核还没产出，先记下来，别静默吞掉
+    # plan 这类内核还没产出的事件，先记下来，别静默吞掉
     client, turn = AcpClient(), Turn()
-    client._apply_update(turn, _notify("tool_call", "ls -la"))
-    assert turn.unknown
-    assert "tool_call" in turn.unknown[0]
+    client._apply_update(turn, _notify("plan", "步骤"))
+    assert turn.unknown == ["plan"]
+
+
+# ---- 工具调用：折叠进 Turn.tools ----
+
+def _tool_frame(session_update: str, **fields) -> dict:
+    """拼一个工具调用通知帧（tool_call / tool_call_update）。"""
+    update = {"sessionUpdate": session_update}
+    update.update(fields)
+    return {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {"sessionId": "s1", "update": update},
+    }
+
+
+def test_tool_call_is_recorded_as_tool_state():
+    client, turn = AcpClient(), Turn()
+    client._apply_update(
+        turn,
+        _tool_frame(
+            "tool_call",
+            toolCallId="c1",
+            title="读取文件",
+            kind="read",
+            status="in_progress",
+        ),
+    )
+    assert turn.unknown == []          # 不再落进 unknown
+    assert len(turn.tools) == 1
+    t = turn.tools[0]
+    assert (t.call_id, t.title, t.kind, t.status) == ("c1", "读取文件", "read", "in_progress")
+
+
+def test_tool_call_update_folds_into_same_state():
+    """同一 call_id 的 update 就地更新，不新开一条。"""
+    client, turn = AcpClient(), Turn()
+    client._apply_update(
+        turn, _tool_frame("tool_call", toolCallId="c1", title="跑命令", status="pending")
+    )
+    client._apply_update(
+        turn,
+        _tool_frame("tool_call_update", toolCallId="c1", status="completed", rawOutput="ok"),
+    )
+    assert len(turn.tools) == 1
+    assert turn.tools[0].status == "completed"
+    assert turn.tools[0].output == "ok"
+
+
+def test_tool_call_without_id_is_ignored():
+    """没有 call_id 就归并不了，宁可不画也不画错。"""
+    client, turn = AcpClient(), Turn()
+    client._apply_update(turn, _tool_frame("tool_call", title="无 id"))
+    assert turn.tools == []
 
 
 def test_empty_kind_falls_back_to_message():

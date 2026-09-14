@@ -55,6 +55,17 @@ ERROR_MARK = "[错误]"
 
 
 @dataclass
+class ToolCallState:
+    """一次工具调用的归并状态（start / update 折叠到同一个对象）。"""
+
+    call_id: str
+    title: str = ""
+    kind: str = ""      # read / edit / execute / other
+    status: str = ""    # pending / in_progress / completed / failed
+    output: str = ""
+
+
+@dataclass
 class Turn:
     """一轮对话 reduce 出来的稳定状态。
 
@@ -68,6 +79,8 @@ class Turn:
     stop_reason: str = ""
     error: str = ""  # 从 thought 通道里识别出来的错误，见 ERROR_MARK
     unknown: list[str] = field(default_factory=list)  # 未识别的事件类型，调试用
+    tools: list[ToolCallState] = field(default_factory=list)  # 本轮的工具调用（按出现顺序）
+    tool_map: dict[str, ToolCallState] = field(default_factory=dict)  # call_id -> 状态
 
     @property
     def running(self) -> bool:
@@ -127,6 +140,7 @@ class AcpClient:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         timeout: float = DEFAULT_TIMEOUT,
+        mcp_servers: list[dict] | None = None,
     ) -> None:
         # 默认用 sys.executable 而不是 "python"：
         # forgeagent 和 agentd 装在同一个 venv 里时，PATH 上的 python 未必是那一个。
@@ -146,6 +160,8 @@ class AcpClient:
         self._cwd = cwd or os.environ.get("FORGEAGENT_CWD") or os.getcwd()
         self._env = env
         self._timeout = timeout
+        # 本会话要接入的 MCP server（ACP 格式），session/new 时带过去
+        self._mcp_servers = list(mcp_servers or [])
 
         self._proc: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
@@ -188,7 +204,7 @@ class AcpClient:
         单独抽出来是因为 GUI 的「新对话」按钮也要开新会话，但那一步发生在
         initialize 握手之后、用户点了按钮才触发，不能和 start() 绑死。
         """
-        resp = await self._call(M_NEW, {"cwd": self._cwd, "mcpServers": []})
+        resp = await self._call(M_NEW, {"cwd": self._cwd, "mcpServers": self._mcp_servers})
         self.session_id = resp["result"]["sessionId"]
         return self.session_id
 
@@ -347,6 +363,12 @@ class AcpClient:
         params = msg.get("params", {})
         update = params.get("update", params)
         kind = str(update.get("sessionUpdate", ""))
+
+        # 工具调用：即使没有文本也要处理（start 事件常常只有 id/title/status）
+        if kind in ("tool_call", "tool_call_update"):
+            self._apply_tool(turn, update)
+            return
+
         chunk = _collect_text(update)
         if not chunk:
             return
@@ -366,10 +388,28 @@ class AcpClient:
         elif kind == "user_message_chunk":
             pass  # 自己说的话不重复渲染
         else:
-            tool_or_plan = ("tool_call", "tool_call_update", "plan")
-            if kind in tool_or_plan:
-                # 内核目前不产出这些事件（acp_stdio.py 里明确没映射）。
-                # 先记下来，等内核补齐工具调用时这里就是挂卡片的位置。
-                turn.unknown.append(f"{kind}: {chunk[:80]}")
-            else:
-                turn.unknown.append(kind)
+            turn.unknown.append(kind)
+
+    def _apply_tool(self, turn: Turn, update: dict) -> None:
+        """把 tool_call / tool_call_update 折叠进 Turn.tools（按 call_id 归并）。"""
+        call_id = str(update.get("toolCallId") or update.get("tool_call_id") or "")
+        if not call_id:
+            return
+        state = turn.tool_map.get(call_id)
+        if state is None:
+            state = ToolCallState(call_id=call_id)
+            turn.tools.append(state)
+            turn.tool_map[call_id] = state
+        if update.get("title"):
+            state.title = str(update["title"])
+        if update.get("kind"):
+            state.kind = str(update["kind"])
+        if update.get("status"):
+            state.status = str(update["status"])
+        raw = update.get("rawOutput", update.get("raw_output"))
+        if raw is not None:
+            state.output = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
+        else:
+            text = _collect_text(update.get("content") or [])
+            if text:
+                state.output = text

@@ -128,6 +128,35 @@
   }
   .bubble .label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
 
+  /* 工具调用卡片：一次调用一张，start/update 就地更新（不新开卡片） */
+  .bubble.tool {
+    align-self: flex-start; max-width: 82%; width: fit-content;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 8px 12px;
+  }
+  .tool-head { display: flex; align-items: center; gap: 8px; }
+  .tool-name {
+    font-weight: 600; font-size: 13px;
+    max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tool-kind {
+    font-size: 10px; letter-spacing: .04em; color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
+    flex: 0 0 auto;
+  }
+  .tool-status { margin-left: auto; font-size: 11px; color: var(--text-dim); flex: 0 0 auto; }
+  /* 状态跟随中国习惯配色：运行中黄、完成绿、失败红 */
+  .bubble.tool.running .tool-status { color: #b7791f; }
+  .bubble.tool.done .tool-status { color: #17a673; }
+  .bubble.tool.failed .tool-status { color: var(--danger); }
+  .bubble.tool.failed { border-color: #fda29b; background: var(--danger-bg); }
+  .tool-out {
+    margin-top: 6px; background: var(--code-bg); border-radius: 6px;
+    padding: 6px 8px; font-family: var(--mono); font-size: 12px;
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 240px; overflow: auto;
+  }
+
   .bubble p { margin: 0 0 8px; }
   .bubble p:last-child { margin-bottom: 0; }
   .bubble ul, .bubble ol { margin: 0 0 8px; padding-left: 22px; }
@@ -231,6 +260,7 @@
   var logTimer = null;
   var started = false;
   var activeSession = null;  // 当前所在的会话 id（null = 还没切过）
+  var toolCards = {};        // call_id -> 工具卡片元素（同一张卡片就地更新）
 
   // ---- 跟本机 Python 进程通信 ----
   //
@@ -376,7 +406,9 @@
     return {
       bridge: document.body.dataset.bridge || "",
       status: statusText.textContent,
-      count: n, user: user, assistant: assistant, error: error
+      count: n,
+      tools: document.querySelectorAll("#messages .bubble.tool").length,
+      user: user, assistant: assistant, error: error
     };
   }
 
@@ -417,6 +449,53 @@
   function appendText(el, text) {
     el.dataset.raw += text;
     el._body.innerHTML = renderMd(el.dataset.raw);
+    if (autoScroll) scrollToBottom();
+  }
+
+  // ---- 工具调用卡片 ----
+  //
+  // 内核一轮里可能调多个工具，每个 call_id 一张卡片；同一 call_id 的
+  // start / update 就地更新同一张卡片 —— 否则一次工具调用会在界面上
+  // 闪出三四张（start 一张、每次 update 一张）。
+  var TOOL_KIND_LABEL = { read: "读取", edit: "编辑", execute: "执行", other: "工具" };
+  var TOOL_STATUS_LABEL = {
+    pending: "等待中", in_progress: "运行中", completed: "完成", failed: "失败",
+  };
+
+  function upsertTool(ev) {
+    var id = ev.id || "";
+    var card = id ? toolCards[id] : null;
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "bubble tool";
+      var head = document.createElement("div");
+      head.className = "tool-head";
+      var name = document.createElement("span");
+      name.className = "tool-name";
+      var kind = document.createElement("span");
+      kind.className = "tool-kind";
+      var st = document.createElement("span");
+      st.className = "tool-status";
+      head.appendChild(name); head.appendChild(kind); head.appendChild(st);
+      var out = document.createElement("div");
+      out.className = "tool-out";
+      out.style.display = "none";
+      card.appendChild(head); card.appendChild(out);
+      card._name = name; card._kind = kind; card._st = st; card._out = out;
+      messages.appendChild(card);
+      if (id) toolCards[id] = card;
+    }
+    if (ev.title) card._name.textContent = ev.title;
+    card._kind.textContent = TOOL_KIND_LABEL[ev.kind] || ev.kind || "工具";
+    card._st.textContent = TOOL_STATUS_LABEL[ev.status] || ev.status || "";
+    card.classList.remove("running", "done", "failed");
+    if (ev.status === "failed") card.classList.add("failed");
+    else if (ev.status === "completed") card.classList.add("done");
+    else card.classList.add("running");
+    if (ev.output) {
+      card._out.textContent = ev.output;
+      card._out.style.display = "";
+    }
     if (autoScroll) scrollToBottom();
   }
 
@@ -499,9 +578,26 @@
     } catch (e) { /* 侧栏挂了不影响主聊天 */ }
   }
 
+  // 侧栏底部显示本机 MCP 配置摘要 —— 让「配了几个 server」一眼可见，
+  // 没配时也把配置文件路径露出来，省得用户到处找。
+  async function loadMcp() {
+    if (!started) return;
+    try {
+      var res = await api("/api/mcp");
+      var foot = document.getElementById("sidebar-foot");
+      if (res.count > 0) {
+        foot.textContent = "MCP · " + res.count + " 个：" + (res.servers || []).join("、");
+      } else {
+        foot.textContent = "MCP · 未配置";
+      }
+      foot.title = res.path || "";
+    } catch (e) { /* 不影响主流程 */ }
+  }
+
   function renderHistory(history) {
     messages.innerHTML = "";
     current = null;
+    toolCards = {};
     (history || []).forEach(function (m) {
       addStaticBubble(m.role, m.content || "");
     });
@@ -533,6 +629,7 @@
       if (!r.ok) { showErrorBubble("开新对话失败", r.error || "未知错误"); return; }
       activeSession = r.session;
       current = null;
+      toolCards = {};
       messages.innerHTML = "";
       setActive(r.session);
       setStatus("ready", "新会话 " + (r.session || "").slice(0, 8));
@@ -574,6 +671,7 @@
       var b = newBubble("user");
       b.textContent = ev.text;
       if (autoScroll) scrollToBottom();
+      toolCards = {};  // 新一轮，卡片表清空（id 理论上不冲突，防御性重置）
       setBusy(true);
       sendBtn.disabled = true;
       setStatus("connecting", "生成中…");
@@ -589,6 +687,12 @@
         current.dataset.role = want;
       }
       appendText(current, ev.text);
+      return;
+    }
+
+    if (ev.type === "tool") {
+      upsertTool(ev);
+      report();
       return;
     }
 
@@ -729,6 +833,7 @@
         reportFatal("bootstrap", e);
       }
       loadSessions();        // 把历史会话填进侧栏
+      loadMcp();             // 侧栏底部显示 MCP 配置摘要
       pump();
     },
     function () {

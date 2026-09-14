@@ -125,9 +125,11 @@ python3 -m venv .venv
 |---|---|---|
 | `FORGEAGENT_AGENT_CMD` | 拉起 agent 的命令 | `sys.executable -m agentd.server` |
 | `FORGEAGENT_CWD` | agent 的工作目录 | 当前目录 |
-| `AGENTD_LLM_BACKEND` | 透传给 agentd：`fake` / `ollama` / `openai_compat` | `ollama` |
+| `AGENTD_LLM_BACKEND` | 透传给 agentd：`fake` / `script` / `ollama` / `openai_compat` | `ollama` |
 | `AGENTD_OLLAMA_MODEL` | 透传给 agentd | `auto`（见下） |
 | `AGENTD_OLLAMA_HOST` | 透传给 agentd | `http://localhost:11434` |
+| `AGENTD_SCRIPT_JSON` | 透传给 agentd：`script` 后端的回放脚本（端到端验证用） | 空 |
+| `FORGEAGENT_MCP_CONFIG` | MCP 配置文件位置 | `~/.forgeagent/mcp.json` |
 | `FORGEAGENT_GUI_MODE` | 前端载体：`electron` / `serve` | `electron` |
 | `FORGEAGENT_PYTHON` | electron 模式下拉起 Python 后端的解释器（由 `forgeagent-gui` 自动设为 `sys.executable`）| 系统 `python3` |
 | `FORGEAGENT_UI_DEBUG` | 设为 1 时把本机服务的每个请求打到 stderr | 关 |
@@ -152,6 +154,69 @@ AGENTD_LLM_BACKEND=fake forgeagent
 ```bash
 forgeagent
 ```
+
+### MCP（工具调用）
+
+GUI 负责"**声明**要用哪些 MCP server"，agentd 负责"**连**它们、把工具喂给模型、
+执行工具"。这是 ACP 的设计：客户端在 `session/new` 里把 `mcpServers` 传过去，
+agent 侧自己连。
+
+配置文件（格式沿用 Claude Desktop / WorkBuddy 的习惯）：
+
+```json
+{
+  "mcpServers": {
+    "echo": {
+      "command": "python",
+      "args": ["/path/to/echo_server.py"],
+      "env": { "SOME_TOKEN": "..." }
+    },
+    "remote": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ..." }
+    }
+  }
+}
+```
+
+默认位置 `~/.forgeagent/mcp.json`（可用 `FORGEAGENT_MCP_CONFIG` 改）。文件不存在
+就是"没配 MCP"，不会报错。侧栏底部会显示连了几个 server；`GET /api/mcp` 给出
+路径与名字列表。
+
+**想马上试**：仓库里带了一个示例 server，一条命令生成配置（默认干跑，`--write` 才落盘）：
+
+```bash
+python scripts/install_demo_mcp.py            # 看它准备写什么
+python scripts/install_demo_mcp.py --write    # 备份已有的 → 写入 demo 配置
+```
+
+`command` 会被填成**启动本脚本的那个解释器**（绝对路径）—— 不能写 `python`，
+因为这台机器 PATH 上的 `python` 是微软商店的占位别名，一跑就"未安装 Python"。
+
+配好之后直接聊：模型如果决定调工具，界面上会出现**工具卡片**（一次调用一张，
+状态从"运行中"变"完成/失败"，下面是工具的真实输出）。没有工具调用时和普通对话
+完全一样。
+
+**不用真模型也能验整条链路**（本机 Ollama 不一定在跑，小模型也不一定会调工具）：
+
+```bash
+python scripts/mcp_e2e.py                      # 默认 --agentd-repo D:\workspace\Agentd
+python scripts/mcp_e2e.py --agentd-repo /path/to/Agentd
+```
+
+这个脚本给 agentd 塞 `AGENTD_LLM_BACKEND=script` + 一段回放脚本，让模型"假装"
+先要调 `echo__echo` 再出正文，然后真的去连 Agentd 仓库里的测试 echo MCP server。
+四跳全过才算通过：读 mcp.json → ACP session/new 带 mcpServers → agentd 连 MCP
+server → 工具事件回灌成界面 reducer 认识的 `Turn.tools`。
+
+**两个踩过的坑**（都已在代码里绕开，写自定义前端时要注意）：
+
+1. ACP 的 `McpServerStdio` 把 `args` / `env` 声明成**必填**，`HttpMcpServer` 还要
+   `type`。少字段时 SDK **不报错，而是静默把整份 mcpServers 折成 `[]`** ——
+   现象是"配了 MCP 但 agentd 说没接到"。所以 `mcp_config.py` 宁可补空数组也不省略。
+2. ACP SDK 传给 agentd 的是 **pydantic 模型对象，不是 dict**。agentd 侧如果只认
+   dict 就会静默跳过，日志还说"接入了 1 个 server"却一个工具都列不出来。
+   `McpHub` 现在两种形态都吃。
 
 ### 三跳验证
 
@@ -190,17 +255,23 @@ forgeagent/
   gui/
     bridge.py       桥接层：纯 Python，不依赖任何 GUI 库，可脱离 GUI 单测
     server.py       本机 UI 服务：bridge 的 HTTP 封装 + 静态页面（含 token 校验）
+    mcp_config.py   读 mcp.json → 转成 ACP session/new 要的 mcpServers 结构
     assets/         HTML 前端（HTML/CSS/JS，无外部依赖、离线可用）
     __main__.py     GUI 入口（--mode 选前端载体）
 electron/          Electron 壳（main.js + package.json），默认前端载体：
                   自带 Chromium 渲染 assets/index.html，参考 WorkBuddy 的前端形态
+examples/
+  echo_mcp_server.py   示例 MCP server（echo / now 两个工具），试用 MCP 用
 scripts/
   e2e.py            三跳验证（Ollama / agentd / TUI 界面）
+  mcp_e2e.py        MCP 端到端验证（不用真模型：script 后端 + 真 stdio MCP server）
+  install_demo_mcp.py  把示例 MCP server 写进 ~/.forgeagent/mcp.json（默认干跑）
 tests/
   test_acp_client.py   reducer 单测，不用起进程
   test_app.py          TUI 冒烟（headless）
   test_gui_bridge.py   桥接层单测（注入假 client，无需图形环境）
   test_gui_server.py   本机 UI 服务单测：真起 HTTP 服务，真发请求
+  test_gui_mcp_config.py  mcp.json 解析单测（含"必填字段不能省"的回归）
   test_end_to_end.py   真起子进程跑一遍完整握手 + 流式
 ```
 
@@ -239,9 +310,11 @@ refusal / cancelled` 五种，**没有 error**。agentd 只好把错误塞进 th
 
 ## 当前限制
 
-- **只有文本流。** 工具调用卡片、diff、权限弹窗都没做——不是 UI 写不了，
-  是 agentd 目前根本不产出这些事件（`acp_stdio.py` 里明确写着"工具调用类事件还没映射"）。
-  内核补齐后，挂卡片的位置在 `acp_client.py` 的 `_apply_update` 里，已留好分支。
+- **MCP 工具调用已可用**（见上面的「MCP（工具调用）」一节）：`mcp.json` 声明 server、
+  agentd 用 `agent` 模式跑工具循环、GUI 渲染工具卡片。**没做**的是：权限弹窗、
+  diff 视图、工具调用的中途取消。
+- **工具卡片是本轮内的临时状态**，不进历史。刷新/续聊只重放落库的 user/assistant
+  文本，工具卡片不会重现（内核只把最终回复落库，不存中间的 tool 往返）。
 - HTML 前端里的 Markdown 是**自带的极简实现**（标题、粗斜体、列表、行内代码、围栏代码块），
   没引外部库 —— 离线也能用，代价是高亮、表格这些还没做。
 - **会话侧栏 / 续聊已可用**（参考 WorkBuddy 的会话侧栏）：

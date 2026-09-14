@@ -28,10 +28,11 @@ _MAX_BATCH = 500  # 一次取走上限，防止生成极快时单批过大
 class Bridge:
     """把 AcpClient 的异步事件流转成「JS 来取一批」的同步接口。
 
-    事件都是普通 dict（直接 JSON 序列化给 JS），类型只有四种：
+    事件都是普通 dict（直接 JSON 序列化给 JS），类型有：
         status  连接状态变化
         user    用户发出的消息（回声，让界面立刻有反馈）
         delta   流式增量，role ∈ assistant / thought / error
+        tool    工具调用状态变化（含 id/title/kind/status/output）
         done    本轮结束，带 stop reason 和 error
     """
 
@@ -40,10 +41,13 @@ class Bridge:
         client: AcpClient | None = None,
         cwd: str | None = None,
         command: list[str] | None = None,
+        mcp_servers: list[dict] | None = None,
     ) -> None:
         # client 可注入是为了单测：用一个假的 async client 就能测全部逻辑，
         # 不用真起 agentd 子进程。
-        self._client = client if client is not None else AcpClient(command=command, cwd=cwd)
+        self._client = client if client is not None else AcpClient(
+            command=command, cwd=cwd, mcp_servers=mcp_servers
+        )
         self._events: queue.Queue[dict] = queue.Queue()
         self._commands: queue.Queue[dict] = queue.Queue()  # Python -> JS
         self._ui: dict = {}  # JS -> Python：界面自报的状态，外部可观测
@@ -224,6 +228,7 @@ class Bridge:
         只发新增的部分而不是每次发全量 —— 否则长回答的传输量是 O(n²)。
         """
         last = {"assistant": 0, "thought": 0, "error": 0}
+        seen_tools: dict[str, tuple[str, str]] = {}
         turn: Turn | None = None
         try:
             async for t in self._client.prompt(text):
@@ -236,6 +241,19 @@ class Bridge:
                     if len(value) > last[role]:
                         self._emit(type="delta", role=role, text=value[last[role]:])
                         last[role] = len(value)
+                # 工具卡片：状态有变就发一条（同一个 call_id 会被前端就地更新）
+                for tool in t.tools:
+                    snap = (tool.status, tool.output)
+                    if seen_tools.get(tool.call_id) != snap:
+                        seen_tools[tool.call_id] = snap
+                        self._emit(
+                            type="tool",
+                            id=tool.call_id,
+                            title=tool.title,
+                            kind=tool.kind,
+                            status=tool.status,
+                            output=tool.output,
+                        )
         except Exception as exc:  # noqa: BLE001 - 边界处统一转事件
             msg = f"{type(exc).__name__}: {exc}"
             self._emit(type="delta", role="error", text=msg)

@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from forgeagent.acp_client import Turn
+from forgeagent.acp_client import ToolCallState, Turn
 from forgeagent.gui.bridge import Bridge
 
 
@@ -218,6 +218,61 @@ def test_thought_and_error_go_to_their_own_roles():
         evs = _drain_until_done(bridge)
         roles = [e["role"] for e in evs if e["type"] == "delta"]
         assert roles == ["thought", "assistant", "error"]
+    finally:
+        bridge.close()
+
+
+# ---- 工具调用事件 ----
+
+class _ToolClient(_FakeClient):
+    """吐一个带工具调用的 Turn：先运行中，再完成（带输出）。"""
+
+    async def prompt(self, text: str):
+        turn = Turn(user=text)
+        tool = ToolCallState(
+            call_id="c1", title="echo", kind="other", status="in_progress"
+        )
+        turn.tools.append(tool)
+        turn.tool_map["c1"] = tool
+        yield turn           # -> 应发一条 tool（in_progress）
+        yield turn           # -> 状态没变，不该重复发
+        tool.status = "completed"
+        tool.output = "echo: hi"
+        yield turn           # -> 应发一条 tool（completed + 输出）
+        turn.stop_reason = "end_turn"
+        yield turn
+
+
+def test_tool_events_are_emitted_with_dedup():
+    """工具状态变化要发 tool 事件；状态没变不能重复发（否则界面闪）。"""
+    bridge = Bridge(client=_ToolClient())
+    try:
+        bridge.send("用个工具")
+        evs = _drain_until_done(bridge)
+
+        tools = [e for e in evs if e["type"] == "tool"]
+        assert len(tools) == 2, tools
+        assert tools[0] == {
+            "type": "tool",
+            "id": "c1",
+            "title": "echo",
+            "kind": "other",
+            "status": "in_progress",
+            "output": "",
+        }
+        assert tools[1]["status"] == "completed"
+        assert tools[1]["output"] == "echo: hi"
+    finally:
+        bridge.close()
+
+
+def test_no_tool_events_for_plain_reply():
+    """没有工具调用时不该冒 tool 事件（这是普通对话的常态）。"""
+    bridge = Bridge(client=_FakeClient(chunks=("好",)))
+    try:
+        bridge.send("普通问题")
+        evs = _drain_until_done(bridge)
+        assert [e for e in evs if e["type"] == "tool"] == []
     finally:
         bridge.close()
 

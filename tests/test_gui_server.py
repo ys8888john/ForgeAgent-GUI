@@ -130,7 +130,49 @@ def test_unknown_path_is_404(server):
     assert exc.value.code == 404
 
 
-# ---- 会话侧栏 / 续聊 ----
+# ---- MCP 配置 ----
+
+def test_mcp_endpoint_reports_configured_servers():
+    servers = [
+        {"name": "echo", "command": "python", "args": ["echo.py"]},
+        {"name": "remote", "url": "https://example.com/mcp"},
+    ]
+    srv = UiServer(
+        bridge=Bridge(client=_FakeClient()), mcp_servers=servers
+    ).start()
+    try:
+        info = srv.client().get("/api/mcp")
+        assert info["ok"] is True
+        assert info["count"] == 2
+        assert info["servers"] == ["echo", "remote"]
+        assert info["path"]  # 配置路径要露出来，方便用户找
+    finally:
+        srv.stop()
+
+
+def test_mcp_endpoint_requires_token():
+    import urllib.error
+    import urllib.request
+
+    srv = UiServer(bridge=Bridge(client=_FakeClient()), mcp_servers=[]).start()
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{srv.port}/api/mcp")
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc.value.code == 401
+    finally:
+        srv.stop()
+
+
+def test_mcp_servers_reach_the_acp_client():
+    """mcp_servers 要一路传到 AcpClient —— 它在 session/new 时带给 agentd。"""
+    servers = [{"name": "echo", "command": "python", "args": ["echo.py"]}]
+    srv = UiServer(bridge=None, mcp_servers=servers).start()  # 真 Bridge，但不连 agentd
+    try:
+        assert srv.bridge._client._mcp_servers == servers
+    finally:
+        srv.stop()
+
 
 class _FakeSessions:
     """agentd 会话库的只读视图替身，塞给 UiServer，完全不碰磁盘。"""
