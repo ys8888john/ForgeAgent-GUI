@@ -46,7 +46,11 @@ _ROLE = {
     "error": ("错误", "#b42318"),
 }
 
-_MONO = QFont("Consolas", 10)
+# 跨平台等宽字体：Consolas 是 Windows 专有，非 Windows 上会退化成非等宽。
+# 用 "Monospace" 家族名 + 显式等宽 style hint，Qt 在各平台都能落到真正的等宽字体
+# （Windows→Consolas，Linux→DejaVu Sans Mono，macOS→Menlo/SF Mono）。
+_MONO = QFont("Monospace", 10)
+_MONO.setStyleHint(QFont.StyleHint.Monospace)
 
 
 class _Signals(QObject):

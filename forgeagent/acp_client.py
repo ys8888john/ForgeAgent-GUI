@@ -161,13 +161,20 @@ class AcpClient:
 
     async def start(self) -> None:
         """拉起 agentd 并完成握手。失败会抛 AcpError。"""
+        # 子进程环境：默认继承父进程的，但强制 stdout/stderr 走 UTF-8。
+        # 否则在非 UTF-8 本机 locale（比如 Windows 上 PYTHONIOENCODING=cp936 /
+        # 中文 GBK）时，agentd 打出的中文日志是 GBK 字节，而我们这边按 utf-8
+        # + replace 解码会全变成 U+FFFD，stderr 面板里中文全乱。这一台恰好是
+        # UTF-8 所以之前没暴露，跨平台必须显式钉死。
+        child_env = dict(os.environ if self._env is None else self._env)
+        child_env["PYTHONIOENCODING"] = "utf-8"
         self._proc = await asyncio.create_subprocess_exec(
             *self._command,
             cwd=self._cwd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,  # 必须捕获，见模块 docstring 第 2 条
-            env=self._env,
+            env=child_env,
         )
         self._reader = asyncio.create_task(self._read_stdout())
         self._stderr_reader = asyncio.create_task(self._read_stderr())
