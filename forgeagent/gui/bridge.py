@@ -145,6 +145,62 @@ class Bridge:
         )
         return {"ok": True, "session": session_id}
 
+    def restart(self, env: dict[str, str] | None = None) -> dict:
+        """换环境变量重启 agentd 子进程（切换模型用），尽量保住当前会话 id。
+
+        流程：关旧进程 → 给 client 换 env → 重新 start（握手 + 新 session）→
+        如果之前有会话 id，把 client.session_id 切回去（agentd 从 SQLite 载入
+        历史，模型换了上下文还在）。
+
+        失败处理：不抛异常。返回 {"ok": False, "error": ...}，界面照常显示；
+        旧 client 已经关了，用户重试即可（Bridge 层面没死锁风险）。
+        """
+        if self._closed.is_set():
+            return {"ok": False, "error": "已关闭"}
+        if self._busy:
+            return {"ok": False, "error": "生成中，稍后再切换"}
+
+        old_session = self._client.session_id or None
+        # 先清空：如果 start 失败，至少别让一个已死进程的 session_id 被继续用
+        self._client.session_id = ""
+
+        try:
+            self._submit(self._client.close()).result(timeout=10)
+        except Exception:  # noqa: BLE001 - 关不掉就硬换；子进程是 daemon 关系
+            pass
+        set_env = getattr(self._client, "set_env", None)
+        if callable(set_env):
+            set_env(dict(env) if env else None)
+        else:  # 旧/精简版 client：直接换字段（合并语义在 client 里）
+            self._client._env = dict(env) if env else None
+
+        self._emit(type="status", state="connecting", message="正在切换模型…")
+        try:
+            self._submit(self._client.start()).result(timeout=30)
+        except Exception as exc:  # noqa: BLE001 - 边界处统一转状态事件
+            msg = f"{type(exc).__name__}: {exc}"
+            self._emit(
+                type="status",
+                state="error",
+                message=msg,
+                log=list(self._client.stderr_lines[-10:]),
+            )
+            return {"ok": False, "error": msg}
+
+        # start() 会开新会话；把旧 id 切回去（存在的话）—— 历史在 SQLite 里，
+        # 新进程照样能接着聊。切不回去（库被清了）就用新会话，不硬拗。
+        target = old_session
+        if target:
+            self._client.session_id = target
+            message = f"已切到新模型，继续会话 {target[:8]}"
+        else:
+            target = self._client.session_id
+            message = f"已切到新模型，新会话 {target[:8]}"
+        self._busy = False
+        self._emit(type="session", session_id=target)
+        self._emit(type="status", state="ready", message=message)
+        return {"ok": True, "session": target, "model_env": bool(env)}
+
     def send(self, text: str) -> dict:
         """发一轮。立即返回，真正的流式在后台线程跑。"""
         text = (text or "").strip()

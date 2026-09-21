@@ -240,6 +240,46 @@
   .perm-actions button.warn { color: var(--danger); border-color: #fda29b; }
   .perm-actions button.warn:hover { background: var(--danger-bg); }
   .perm-note { font-size: 11px; color: var(--text-dim); margin-top: 10px; }
+
+  /* 模型选择器 & 管理弹窗 */
+  #model-select {
+    font-size: 12px; padding: 3px 6px; max-width: 220px;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+  }
+  #models-pane {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35);
+    z-index: 60; align-items: center; justify-content: center;
+  }
+  #models-pane.open { display: flex; }
+  .m-box {
+    width: min(560px, calc(100vw - 48px)); max-height: 80vh; overflow: auto;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; box-shadow: 0 12px 40px rgba(0,0,0,.18);
+  }
+  .m-title { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+  .m-note { font-size: 11px; color: var(--text-dim); margin-bottom: 12px; line-height: 1.6; }
+  #m-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .m-item {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  .m-item.active { background: #e8f0fe; border-color: var(--user-border); }
+  .m-item .mi-name { font-size: 13px; font-weight: 600; flex: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .m-item .mi-backend { font-size: 11px; color: var(--text-dim); }
+  .m-item button { font-size: 11px; padding: 3px 8px; }
+  .m-edit {
+    display: none; border-top: 1px dashed var(--border); padding-top: 12px; margin-bottom: 12px;
+  }
+  .m-edit.open { display: block; }
+  .m-row { margin-bottom: 8px; }
+  .m-row input {
+    width: 100%; font-size: 12px; padding: 6px 8px;
+    border: 1px solid var(--border); border-radius: 6px; font-family: var(--mono);
+  }
+  .m-actions { display: flex; gap: 8px; }
+  .m-foot { justify-content: space-between; margin-top: 4px; }
+
 </style>
 </head>
 <body>
@@ -258,7 +298,9 @@
     <header>
       <h1>ForgeAgent</h1>
       <span id="status"><span id="dot"></span><span id="status-text">启动中…</span></span>
+      <select id="model-select" title="切换模型（切换会重启 agentd，当前会话保留）"></select>
       <span class="spacer"></span>
+      <button id="models-btn">模型管理</button>
       <button id="log-btn">agent 日志</button>
     </header>
 
@@ -273,6 +315,32 @@
     <div id="log-pane">
       <div class="bar"><button id="log-close">关闭</button></div>
       <div id="log-body"></div>
+    </div>
+
+    <div id="models-pane">
+      <div class="m-box">
+        <div class="m-title">模型配置</div>
+        <div class="m-note">
+          每个配置 = 一组注入 agentd 的环境变量（AGENTD_*），存于 ~/.forgeagent/models.json。
+          后端可选：ollama / openai_compat / mimo / zhipu。切换即重启 agentd 子进程，当前会话历史保留。
+        </div>
+        <div id="m-list"></div>
+        <div class="m-edit" id="m-edit">
+          <div class="m-row"><input id="m-name" placeholder="显示名，如：智谱 GLM-4.5-air"></div>
+          <div class="m-row"><input id="m-backend" placeholder="AGENTD_LLM_BACKEND，如 zhipu"></div>
+          <div class="m-row"><input id="m-model" placeholder="模型名，如 glm-4.5-air（对应 AGENTD_*_MODEL）"></div>
+          <div class="m-row"><input id="m-baseurl" placeholder="Base URL（可选，AGENTD_OPENAI/MIMO/ZHIPU_BASE_URL）"></div>
+          <div class="m-row"><input id="m-apikey" type="password" placeholder="API Key（可选；留空 = 不改已有的）"></div>
+          <div class="m-actions">
+            <button id="m-save">保存</button>
+            <button id="m-cancel">取消</button>
+          </div>
+        </div>
+        <div class="m-actions m-foot">
+          <button id="m-add">+ 新增</button>
+          <button id="m-close">关闭</button>
+        </div>
+      </div>
     </div>
   </main>
 </div>
@@ -713,6 +781,219 @@
     } catch (e) { /* 不影响主流程 */ }
   }
 
+  // ---- 自定义模型：选择器 + 管理弹窗 ----
+  // profile = 一组 AGENTD_* 环境变量（存 ~/.forgeagent/models.json）。
+  // env 值从后端来时已脱敏（头3尾3），编辑时留空 = 不改已有值 —— 所以
+  // 脱敏串绝不能当新值写回，下面 saveModels 里有专门的清洗逻辑。
+
+  var modelSelect = document.getElementById("model-select");
+  var modelsPane = document.getElementById("models-pane");
+  var modelsBtn = document.getElementById("models-btn");
+  var mEdit = document.getElementById("m-edit");
+  var mList = document.getElementById("m-list");
+  var editingId = null;   // 正在编辑的 profile id（null = 新增）
+
+  function backendKeyPrefix(backend) {
+    if (backend === "mimo") return "AGENTD_MIMO_";
+    if (backend === "zhipu") return "AGENTD_ZHIPU_";
+    if (backend === "openai_compat") return "AGENTD_OPENAI_";
+    return "AGENTD_OLLAMA_";
+  }
+
+  async function loadModels() {
+    try {
+      var res = await api("/api/models");
+      renderModelSelect(res.profiles || [], res.active);
+      return res;
+    } catch (e) { return null; }
+  }
+
+  function renderModelSelect(profiles, active) {
+    modelSelect.innerHTML = "";
+    var def = document.createElement("option");
+    def.value = "";
+    def.textContent = "默认（agentd .env / Ollama）";
+    modelSelect.appendChild(def);
+    profiles.forEach(function (p) {
+      var o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = p.name;
+      modelSelect.appendChild(o);
+    });
+    modelSelect.value = active || "";
+  }
+
+  modelSelect.addEventListener("change", function () {
+    var id = modelSelect.value;
+    if (!window.confirm(id ? "切换到「" + (modelSelect.selectedOptions[0] || {}).textContent + "」？会重启 agentd（会话保留）。"
+                           : "切回默认配置？会重启 agentd（会话保留）。")) {
+      loadModels();  // 撤销下拉框的选择
+      return;
+    }
+    api("/api/model/select", { method: "POST", body: { id: id } })
+      .then(function (r) {
+        if (!r.ok) {
+          showErrorBubble("切换失败", r.error || "未知错误");
+          loadModels();
+        }
+        // 成功时事件流会推 session/status，选择器状态由下一次 loadModels 刷新
+      })
+      .catch(function (e) { showErrorBubble("切换失败", String(e)); loadModels(); });
+  });
+
+  function openModels() {
+    modelsPane.classList.add("open");
+    renderModelList();
+    loadModels();
+  }
+  function closeModels() {
+    modelsPane.classList.remove("open");
+    mEdit.classList.remove("open");
+    editingId = null;
+  }
+  modelsBtn.addEventListener("click", openModels);
+  document.getElementById("m-close").addEventListener("click", closeModels);
+  modelsPane.addEventListener("click", function (e) {
+    if (e.target === modelsPane) closeModels();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && modelsPane.classList.contains("open")) closeModels();
+  });
+
+  function profileFromForm() {
+    var name = document.getElementById("m-name").value.trim();
+    var backend = document.getElementById("m-backend").value.trim();
+    var model = document.getElementById("m-model").value.trim();
+    var base = document.getElementById("m-baseurl").value.trim();
+    var key = document.getElementById("m-apikey").value;  // key 不 trim，原样收
+    var env = { "AGENTD_LLM_BACKEND": backend || "ollama" };
+    var prefix = backendKeyPrefix(backend);
+    if (model) env[prefix + "MODEL"] = model;
+    if (base) {
+      // 用户只填一个 base 输入框，但变量名因后端而异 —— 三个都设，
+      // 多余的键 agentd 忽略，不会串味（不同后端各读各的 *_BASE_URL）。
+      env["AGENTD_OPENAI_BASE_URL"] = base;
+      env["AGENTD_MIMO_BASE_URL"] = base;
+      env["AGENTD_ZHIPU_BASE_URL"] = base;
+    }
+    if (key) env[prefix + "API_KEY"] = key;
+    return { id: editingId || "", name: name || backend || "模型", env: env, _keepKey: !key };
+  }
+
+  async function saveModelsDialog(profile, afterSave) {
+    var res = await api("/api/models");
+    var profiles = (res.profiles || []).slice();
+    var keepKey = profile._keepKey;
+    delete profile._keepKey;
+    if (editingId) {
+      var idx = profiles.findIndex(function (p) { return p.id === editingId; });
+      if (idx >= 0) {
+        // 留空不改：把旧 profile 里没在表单里出现的 key 保留下来（如已存的 API Key）
+        var oldEnv = profiles[idx].env || {};
+        for (var k in oldEnv) {
+          if (!(k in profile.env)) {
+            // 旧值是脱敏串（含 "…"）时不能带进新 env —— 后端存的是原文，
+            // 这里不回传就是"不修改"，后端按"键缺失 = 保留旧值"处理。
+          }
+        }
+        profiles[idx] = Object.assign({}, profiles[idx], profile);
+      }
+    } else {
+      profile.id = "m-" + Date.now().toString(36);
+      profiles.push(profile);
+    }
+    return api("/api/models", { method: "POST", body: { data: { active: res.active, profiles: profiles } } })
+      .then(function (r) {
+        if (!r.ok) throw new Error(r.error || "保存失败");
+        renderModelSelect(r.data.profiles || [], r.data.active);
+        renderModelList();
+        return r;
+      });
+  }
+
+  function renderModelList() {
+    api("/api/models").then(function (res) {
+      mList.innerHTML = "";
+      var active = res.active;
+      (res.profiles || []).forEach(function (p) {
+        var item = document.createElement("div");
+        item.className = "m-item" + (p.id === active ? " active" : "");
+        var name = document.createElement("span");
+        name.className = "mi-name";
+        name.textContent = p.name;
+        var backend = document.createElement("span");
+        backend.className = "mi-backend";
+        backend.textContent = (p.env && p.env["AGENTD_LLM_BACKEND"]) || "";
+        var editBtn = document.createElement("button");
+        editBtn.textContent = "编辑";
+        editBtn.addEventListener("click", function () { editModel(p); });
+        var delBtn = document.createElement("button");
+        delBtn.textContent = "删除";
+        delBtn.addEventListener("click", function () { deleteModel(p.id); });
+        item.appendChild(name); item.appendChild(backend);
+        item.appendChild(editBtn); item.appendChild(delBtn);
+        mList.appendChild(item);
+      });
+      if (!(res.profiles || []).length) {
+        var empty = document.createElement("div");
+        empty.className = "si-empty";
+        empty.textContent = "还没有配置。点「+ 新增」建一个（比如智谱 / MiMo / Ollama）。";
+        mList.appendChild(empty);
+      }
+    }).catch(function () {});
+  }
+
+  function editModel(p) {
+    editingId = p.id;
+    document.getElementById("m-name").value = p.name || "";
+    var env = p.env || {};
+    document.getElementById("m-backend").value = env["AGENTD_LLM_BACKEND"] || "";
+    var prefix = backendKeyPrefix(env["AGENTD_LLM_BACKEND"]);
+    // API Key 永不回填（后端给的也是掩码）；留空提交 = 后端 merge 保留旧值
+    document.getElementById("m-apikey").value = "";
+    document.getElementById("m-model").value = env[prefix + "MODEL"] || env["AGENTD_OLLAMA_MODEL"] || "";
+    var baseKeys = ["AGENTD_OPENAI_BASE_URL", "AGENTD_MIMO_BASE_URL", "AGENTD_ZHIPU_BASE_URL"];
+    var base = "";
+    for (var i = 0; i < baseKeys.length; i++) {
+      if (env[baseKeys[i]]) { base = env[baseKeys[i]]; break; }
+    }
+    document.getElementById("m-baseurl").value = base;
+    mEdit.classList.add("open");
+  }
+
+  function deleteModel(id) {
+    if (!window.confirm("删除这个模型配置？")) return;
+    api("/api/models").then(function (res) {
+      var profiles = (res.profiles || []).filter(function (p) { return p.id !== id; });
+      var active = res.active === id ? null : res.active;
+      return api("/api/models", { method: "POST", body: { data: { active: active, profiles: profiles } } });
+    }).then(function (r) {
+      renderModelSelect(r.data.profiles || [], r.data.active);
+      renderModelList();
+    }).catch(function (e) { showErrorBubble("删除失败", String(e)); });
+  }
+
+  document.getElementById("m-add").addEventListener("click", function () {
+    editingId = null;
+    ["m-name", "m-backend", "m-model", "m-baseurl", "m-apikey"].forEach(function (id) {
+      document.getElementById(id).value = "";
+    });
+    mEdit.classList.add("open");
+  });
+
+  document.getElementById("m-cancel").addEventListener("click", function () {
+    mEdit.classList.remove("open");
+    editingId = null;
+  });
+
+  document.getElementById("m-save").addEventListener("click", function () {
+    var profile = profileFromForm();
+    saveModelsDialog(profile).then(function () {
+      mEdit.classList.remove("open");
+      editingId = null;
+    }).catch(function (e) { showErrorBubble("保存失败", String(e)); });
+  });
+
   function renderHistory(history) {
     messages.innerHTML = "";
     current = null;
@@ -965,6 +1246,7 @@
       }
       loadSessions();        // 把历史会话填进侧栏
       loadMcp();             // 侧栏底部显示 MCP 配置摘要
+      loadModels();          // header 的模型下拉框
       pump();
     },
     function () {

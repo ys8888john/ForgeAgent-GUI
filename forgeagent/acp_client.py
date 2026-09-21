@@ -216,7 +216,12 @@ class AcpClient:
             # 跨平台时那道手续是主要的踩坑来源（引号、反斜杠、空格路径）。
             self._command = [sys.executable, "-m", "agentd.server"]
         self._cwd = cwd or os.environ.get("FORGEAGENT_CWD") or os.getcwd()
-        self._env = env
+        # env 语义：**合并**到 os.environ 之上，不是整体替换。
+        # 之前 dict(os.environ if env is None else env) 的写法，传了 env 就把
+        # PATH/HOME 全丢了 —— 子进程连 python 都找不到，报错还看不出来是这。
+        # 现在的语义与 agentd 的 .env 一致：用户显式给的键覆盖同名环境变量，
+        # 其余照常继承。GUI 的模型 profile 就靠这条路注入 AGENTD_* 变量。
+        self._env = dict(env) if env else None
         self._timeout = timeout
         # 本会话要接入的 MCP server（ACP 格式），session/new 时带过去
         self._mcp_servers = list(mcp_servers or [])
@@ -242,6 +247,14 @@ class AcpClient:
 
     # ---- 生命周期 ----
 
+    def set_env(self, env: dict[str, str] | None) -> None:
+        """换注入 agentd 子进程的环境变量（下次 start 生效）。
+
+        公开方法而不是让 bridge 直接戳 _env：字段语义（合并 vs 替换）
+        是实现细节，外部依赖它会把未来的改动变成 breaking。
+        """
+        self._env = dict(env) if env else None
+
     async def start(self) -> None:
         """拉起 agentd 并完成握手。失败会抛 AcpError。"""
         # 子进程环境：默认继承父进程的，但强制 stdout/stderr 走 UTF-8。
@@ -249,7 +262,9 @@ class AcpClient:
         # 中文 GBK）时，agentd 打出的中文日志是 GBK 字节，而我们这边按 utf-8
         # + replace 解码会全变成 U+FFFD，stderr 面板里中文全乱。这一台恰好是
         # UTF-8 所以之前没暴露，跨平台必须显式钉死。
-        child_env = dict(os.environ if self._env is None else self._env)
+        child_env = dict(os.environ)
+        if self._env:
+            child_env.update(self._env)
         child_env["PYTHONIOENCODING"] = "utf-8"
         self._proc = await asyncio.create_subprocess_exec(
             *self._command,

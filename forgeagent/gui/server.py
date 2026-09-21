@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .bridge import Bridge
 from .mcp_config import config_path, load_mcp_servers
+from .models import env_for, load_models, models_path, sanitize_profile, save_models
 from .sessions import SessionsSource
 
 ASSETS = Path(__file__).parent / "assets"
@@ -262,6 +263,28 @@ class _Handler(BaseHTTPRequestHandler):
         if u.path == "/api/session/new":
             return self._json(bridge.new_session())
 
+        # ---- 模型：自定义 profile 管理 / 切换 ----
+        # profile = 一组注入 agentd 子进程的 AGENTD_* 环境变量（存
+        # ~/.forgeagent/models.json）。切换 = 用新 env 重启 agentd 子进程，
+        # 会话 id 保住（历史在 SQLite，跨进程可续）。
+        if u.path == "/api/models":
+            data = body.get("data") if isinstance(body.get("data"), dict) else {}
+            profiles = [sanitize_profile(p) for p in data.get("profiles") or [] if isinstance(p, dict)]
+            try:
+                saved = save_models({"active": data.get("active"), "profiles": profiles})
+            except ValueError as exc:
+                return self._fail(400, str(exc))
+            return self._json({"ok": True, "data": self._models_masked(saved)})
+
+        if u.path == "/api/model/select":
+            pid = str(body.get("id") or "")
+            data = load_models()
+            if pid and not any(p.get("id") == pid for p in data["profiles"]):
+                return self._fail(404, f"没有这个模型配置: {pid}")
+            save_models({**data, "active": pid or None})
+            env = env_for(pid or None)
+            return self._json(bridge.restart(env))
+
         self._fail(404, f"没有这个接口: {u.path}")
 
     def _api_get(self, path: str, q: dict) -> None:
@@ -269,6 +292,10 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/hello":
             return self._json({"ok": True, "token_ok": True})
+
+        # ---- 自定义模型 profile ----
+        if path == "/api/models":
+            return self._json(self._models_payload())
 
         # 本机 MCP 配置摘要（侧栏/状态区显示连了几个 server）
         if path == "/api/mcp":
@@ -279,6 +306,26 @@ class _Handler(BaseHTTPRequestHandler):
                     "path": str(config_path()),
                     "count": len(servers),
                     "servers": [s.get("name") for s in servers],
+                }
+            )
+
+        # ---- 自定义模型 profile ----
+        # GET  /api/models           列表（env 里的 key 原样给，value 脱敏显示）
+        # POST /api/models           整份保存（来自管理弹窗）
+        if path == "/api/models":
+            return self._json(self._models_payload())
+
+        # 当前激活的模型信息（状态栏显示用）
+        if path == "/api/model/active":
+            data = load_models()
+            pid = data.get("active")
+            profile = next((p for p in data["profiles"] if p.get("id") == pid), None)
+            return self._json(
+                {
+                    "ok": True,
+                    "id": pid,
+                    "name": (profile or {}).get("name") if profile else None,
+                    "has_profile": bool(profile),
                 }
             )
 
@@ -316,6 +363,30 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "state": bridge.ui_state()})
 
         self._fail(404, f"没有这个接口: {path}")
+
+    # ---- 模型 profile 的读/写辅助 ----
+
+    @staticmethod
+    def _models_masked(data: dict) -> dict:
+        """列表给前端时脱敏：只脱「密钥语义」的值（键名含 KEY）。
+
+        MODEL / BASE_URL **不脱敏** —— 它们本来就不敏感，而且编辑表单要回填：
+        回填一个掩码串，用户一保存就把掩码写进了真配置。API Key 则相反：
+        永远脱敏 + 永不回填，编辑时留空由后端 merge 语义保留旧值。
+        """
+        profiles = []
+        for p in data.get("profiles") or []:
+            env = {}
+            for k, v in (p.get("env") or {}).items():
+                v = str(v)
+                if "KEY" in str(k).upper() and len(v) > 6:
+                    v = f"{v[:3]}…{v[-3:]}"
+                env[k] = v
+            profiles.append({**p, "env": env})
+        return {"ok": True, "path": str(models_path()), "active": data.get("active"), "profiles": profiles}
+
+    def _models_payload(self) -> dict:
+        return self._models_masked(load_models())
 
     def _file(self, rel: str) -> None:
         rel = (rel or "").strip("/") or "index.html"
