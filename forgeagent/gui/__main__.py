@@ -59,16 +59,15 @@ def _launch_electron(*, cwd: str | None) -> None:
     # "Cannot find module electron"。这里先点破，省得人去猜。
     electron_pkg = electron_dir / "node_modules" / "electron"
     if not electron_pkg.is_dir():
-        # npm 不是 electron 的依赖，不会装进 electron/node_modules；用托管 node 自带的 npm。
-        node_dir = "C:\\Users\\Administrator\\workbuddy\\binaries\\node\\versions\\22.22.2-3"
-        npm_cli = f"{node_dir}\\node_modules\\npm\\bin\\npm-cli.js"
+        npm = shutil.which("npm")
+        npm_cmd = f'"{npm}" install' if npm else "npm install"
         raise SystemExit(
             f"Electron 包没装完整（缺 {electron_pkg}）。先装依赖：\n"
             f"  cd {electron_dir}\n"
-            f'  & "{node_dir}\\node.exe" "{npm_cli}" install\n'
-            f"若 Chromium 下载被墙，设镜像重试：\n"
-            f"  $env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'\n"
-            f'  & "{node_dir}\\node.exe" "{npm_cli}" install'
+            f"  {npm_cmd}\n"
+            f"若 Chromium 下载被墙（GitHub 直连超时），用镜像重试：\n"
+            f"  export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/\n"
+            f"  {npm_cmd}"
         )
 
     bin_name = "electron.cmd" if os.name == "nt" else "electron"
