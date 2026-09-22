@@ -67,8 +67,14 @@ class UiServer:
         # MCP server 配置：默认从 ~/.forgeagent/mcp.json 读（没有就是空），
         # 在 session/new 时交给 agentd。
         self.mcp_servers = load_mcp_servers() if mcp_servers is None else mcp_servers
+        # **启动时应用 active 模型 profile**：models.json 里记着"当前用哪个
+        # provider"（含 AGENTD_* 环境变量组），GUI 每次启动都要把它带到
+        # agentd 子进程上 —— 否则重启后悄然退回默认 ollama，用户前几天配的
+        # 智谱 key 就"丢了"（其实是active还在，只是没人注入）。这条链和
+        # /api/model/select 的 restart() 用的是同一个 env_for()。
+        self.models_env = env_for(load_models().get("active"))
         self.bridge = bridge if bridge is not None else Bridge(
-            cwd=cwd, command=command, mcp_servers=self.mcp_servers
+            cwd=cwd, command=command, mcp_servers=self.mcp_servers, env=self.models_env or None
         )
         # 会话库只读视图：默认读 agentd 的 SQLite（~/.agentd/sessions.db）。
         # 测试可注入假的，完全不碰磁盘。
@@ -106,10 +112,17 @@ class UiServer:
         return LocalClient(self)
 
     def stop(self) -> None:
-        """关窗时调用：带走 agentd 子进程。"""
+        """关窗时调用：带走 agentd 子进程。
+
+        shutdown() 只能在 serve_forever 跑着的时候调 —— 没,start 过的 server
+        （构造完直接停，比如测试/工具脚本）调 shutdown 会**永久挂死**：
+        它等的是一个从未开始、也就永远不会退出的循环。is_alive 判一下；
+        server_close（关 socket）则总是安全的。
+        """
         self.bridge.close()
         try:
-            self._httpd.shutdown()
+            if self._thread.is_alive():
+                self._httpd.shutdown()
             self._httpd.server_close()
         except Exception:  # noqa: BLE001 - 关闭路径不该抛
             pass

@@ -186,3 +186,35 @@ def test_select_default_clears_active(server):
     assert r["ok"]
     assert M.load_models()["active"] is None
     assert server._fake.env is None
+
+
+def test_server_startup_applies_active_profile(tmp_path):
+    """用户报的 bug（2026-09-22）：配置了 provider、重启 GUI 后又回到默认
+    ollama —— models.json 的 active 明明还在，但启动时没人注入 env。
+
+    锁定行为：UiServer 创建真 Bridge 时必须把 active profile 的 env 带到
+    AcpClient 上，重启 GUI 后 provider 自动生效。
+    """
+    M.save_models({"active": "z1", "profiles": [
+        _profile("z1", env={"AGENTD_LLM_BACKEND": "zhipu",
+                            "AGENTD_ZHIPU_API_KEY": "sk-live-key-123"}),
+    ]})
+
+    srv = UiServer()  # 真 Bridge + 真 AcpClient（不 start，不起进程）
+    try:
+        client = srv.bridge._client
+        assert client._env == {"AGENTD_LLM_BACKEND": "zhipu",
+                               "AGENTD_ZHIPU_API_KEY": "sk-live-key-123"}
+    finally:
+        srv.stop()
+
+
+def test_server_startup_without_active_uses_no_env(tmp_path):
+    """没配过 provider（active=None）：不能注入半截 env，行为与从前一致。"""
+    M.save_models({"active": None, "profiles": [_profile("z1")]})
+
+    srv = UiServer()
+    try:
+        assert srv.bridge._client._env is None
+    finally:
+        srv.stop()

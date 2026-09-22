@@ -43,11 +43,14 @@ class Bridge:
         cwd: str | None = None,
         command: list[str] | None = None,
         mcp_servers: list[dict] | None = None,
+        env: dict[str, str] | None = None,
     ) -> None:
         # client 可注入是为了单测：用一个假的 async client 就能测全部逻辑，
         # 不用真起 agentd 子进程。
+        # env 是初始注入 agentd 子进程的变量组（GUI 的 active 模型 profile），
+        # 只在"不注入 client"的默认路径上生效 —— 注入 client 的测试自己管 env。
         self._client = client if client is not None else AcpClient(
-            command=command, cwd=cwd, mcp_servers=mcp_servers
+            command=command, cwd=cwd, mcp_servers=mcp_servers, env=env
         )
         self._events: queue.Queue[dict] = queue.Queue()
         self._commands: queue.Queue[dict] = queue.Queue()  # Python -> JS
