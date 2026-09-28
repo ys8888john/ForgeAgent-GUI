@@ -262,6 +262,9 @@ python scripts/verify_local_mcp.py                      # 验证：真连一遍�
   `scripts/install_local_mcp.py --install --write` 把包装进专用 venv 后才会写入；
   没装会得到明确的 400 提示。GUI 内不做 pip 安装 —— pip 出网在受限环境不可控，
   安装路径保留在脚本里人工执行。
+- **命令行脚本同样分型**：`install_local_mcp.py --list` 会标注 bundled；
+  选中全是 bundled 时直接写配置（解释器 = 运行脚本的 python，需装着 `mcp` 包），
+  不再强制建 venv；含 pip 型才走建 venv + pip 流程。
 
 | 预设 | pip 包 | 用途 | 备注 |
 |---|---|---|---|
@@ -560,7 +563,10 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   历史仍可查询，恢复显示删掉 hidden 文件即可。
   GUI 只读那一份 SQLite 库（另开 read-only 连接，WAL 并发读不冲突），不碰写方。
   后端接口：`GET /api/sessions`、`GET /api/session/<id>`、`POST /api/session/resume`、
-  `POST /api/session/new`、`POST /api/session/hide`、`POST /api/mode`。
+  `POST /api/session/new`、`POST /api/session/hide`、`POST /api/session/rename`、
+  `POST /api/mode`。
+  **会话重命名**：条目 hover 有 ✎，写本地别名（`session_aliases.json`），
+  列表标题别名优先；留空提交即恢复自动标题。
 - **会话模式切换**：顶栏模式下拉（agent ↔ single），经 `session/set_mode`
   生效（下一轮 prompt 起新语义，agentd 响应里声明的取值为准）。agentd 未
   声明 modes（旧版本）时下拉框自动隐藏。agentd 切换后会广播

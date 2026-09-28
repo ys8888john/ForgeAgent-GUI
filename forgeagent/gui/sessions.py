@@ -62,6 +62,9 @@ class SessionsSource:
         # 对齐主流产品的做法是把会话移出列表。真要清数据用 agentd 的
         # scripts/sessions.py。不提供 unhide 界面，删 hidden 文件即可恢复显示。
         self.hidden_path = self.path.parent / "hidden_sessions.json"
+        # "重命名"同理：不改库（标题列来自首条消息），本地记一份别名，
+        # list_meta 里 alias 优先。空别名 = 恢复自动标题。
+        self.aliases_path = self.path.parent / "session_aliases.json"
 
     def _load_hidden(self) -> set[str]:
         try:
@@ -78,6 +81,29 @@ class SessionsSource:
         self.hidden_path.write_text(
             json.dumps(sorted(hidden), ensure_ascii=False), encoding="utf-8"
         )
+
+    def _load_aliases(self) -> dict[str, str]:
+        try:
+            data = json.loads(self.aliases_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {str(k): str(v) for k, v in data.items() if str(v).strip()}
+
+    def rename(self, session_id: str, title: str) -> str:
+        """给会话起个人名（持久化到本地名单）；空标题 = 恢复自动标题。"""
+        title = (title or "").strip()[:80]
+        aliases = self._load_aliases()
+        if title:
+            aliases[session_id] = title
+        else:
+            aliases.pop(session_id, None)
+        self.aliases_path.parent.mkdir(parents=True, exist_ok=True)
+        self.aliases_path.write_text(
+            json.dumps(aliases, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return title
 
     def list_meta(self) -> list[dict]:
         """已有会话的摘要，按最近活动降序。给侧栏用。"""
@@ -104,10 +130,14 @@ class SessionsSource:
 
         out: list[dict] = []
         hidden = self._load_hidden()
+        aliases = self._load_aliases()
         for sid, created, count, first, last in rows:
             if sid in hidden:
                 continue  # 已被用户"删除"（隐藏）的会话不出现在侧栏
+            aliased = aliases.get(sid)
             title = (first or "").strip().split("\n", 1)[0] or "（空会话）"
+            if aliased:
+                title = aliased  # 用户改过的名字优先
             preview = (last or "").strip().replace("\r\n", "\n").split("\n", 1)[0]
             out.append(
                 {

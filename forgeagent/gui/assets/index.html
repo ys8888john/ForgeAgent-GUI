@@ -122,7 +122,12 @@
     position: absolute; right: 8px; top: 8px; display: none;
     border: none; background: none; color: var(--text-dim); cursor: pointer; font-size: 13px;
   }
+  .session-item .si-ren {
+    position: absolute; right: 26px; top: 8px; display: none;
+    border: none; background: none; color: var(--text-dim); cursor: pointer; font-size: 13px;
+  }
   .session-item:hover .si-del { display: inline-block; }
+  .session-item:hover .si-ren { display: inline-block; }
   .session-item .si-del:hover { color: #d2504a; }
   .bubble.user {
     align-self: flex-end; background: var(--user-bg);
@@ -936,6 +941,25 @@
           .catch(function (err) { showErrorBubble("移除失败", String((err && err.message) || err)); });
       });
       b.appendChild(del);
+      var ren = document.createElement("button");
+      ren.className = "si-ren";
+      ren.type = "button";
+      ren.textContent = "✎";
+      ren.title = "重命名该对话（空 = 恢复自动标题）";
+      ren.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var newTitle = window.prompt("新的会话名（留空恢复自动标题）", s.title || "");
+        if (newTitle === null) return;
+        api("/api/session/rename", {
+          method: "POST",
+          body: { session_id: s.id, title: newTitle }
+        })
+          .then(function () { return loadSessions(); })
+          .catch(function (err) {
+            showErrorBubble("重命名失败", String((err && err.message) || err));
+          });
+      });
+      b.appendChild(ren);
       b.addEventListener("click", function () { resumeSession(s.id); });
       box.appendChild(b);
     });
@@ -1312,6 +1336,12 @@
                 return null;
               }
               setStatus("ready", "常用工具已添加：" + p.name + "（agentd 已重启）");
+              if (p.name === "sqlite") {
+                setStatus(
+                  "ready",
+                  "sqlite 已添加（默认只读；要写数据请在上方 mcp.json 给它的 args 加 --allow-write）"
+                );
+              }
               return loadMcp().then(function () { return api("/api/mcp/raw"); });
             })
             .then(function (raw) {

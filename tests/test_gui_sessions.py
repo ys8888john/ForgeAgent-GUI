@@ -124,3 +124,34 @@ def test_hide_persists_and_filters_list_meta(tmp_path):
     assert [m["id"] for m in fresh.list_meta()] == ["s2"]
     # 隐藏 ≠ 删除：历史照常可读
     assert fresh.get_history("s1") is not None
+
+
+def test_rename_persists_and_overrides_title(tmp_path):
+    """重命名走本地 alias：list_meta 标题优先用别名，持久可重启；空名恢复自动。"""
+    db = tmp_path / "sessions.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)
+    for sid, first_line in (("s1", "第一条消息\n第二行"), ("s2", "另一个会话")):
+        conn.execute("INSERT INTO sessions (id, created_at) VALUES (?, 0)", (sid,))
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, payload, created_at)"
+            " VALUES (?, 'user', ?, ?, 0)",
+            (sid, first_line, json.dumps({"session_id": sid, "role": "user", "content": first_line})),
+        )
+    conn.commit()
+    conn.close()
+
+    src = SessionsSource(db)
+    auto = {m["id"]: m["title"] for m in src.list_meta()}
+    assert auto["s1"].startswith("第一条消息")
+
+    assert src.rename("s1", "我的项目") == "我的项目"
+    titled = {m["id"]: m["title"] for m in src.list_meta()}
+    assert titled["s1"] == "我的项目"        # alias 优先
+    assert titled["s2"] == "另一个会话"       # 其它会话不受影响
+
+    fresh = SessionsSource(db)               # 重启后仍在
+    assert {m["id"]: m["title"] for m in fresh.list_meta()}["s1"] == "我的项目"
+
+    src.rename("s1", "")                      # 空名 = 恢复自动标题
+    assert {m["id"]: m["title"] for m in src.list_meta()}["s1"].startswith("第一条消息")

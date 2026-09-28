@@ -190,9 +190,14 @@ class _FakeSessions:
         self._history = history or []
         self._exists = exists
         self.hidden: list[str] = []
+        self.renamed: list[tuple[str, str]] = []
 
     def hide(self, session_id: str) -> None:
         self.hidden.append(session_id)
+
+    def rename(self, session_id: str, title: str) -> str:
+        self.renamed.append((session_id, title))
+        return title
 
     def list_meta(self):
         return self._sessions
@@ -464,3 +469,24 @@ def test_mcp_presets_endpoint_and_bundled_add(tmp_path, monkeypatch):
     finally:
         srv.stop()
 
+
+
+def test_session_rename_round_trip():
+    """POST /api/session/rename 落到会话源的 rename（本地 alias，不改库）。"""
+    fake = _FakeSessions()
+    srv = _server_with(fake)
+    try:
+        res = srv.client().post(
+            "/api/session/rename", {"session_id": "sess_abc123", "title": "我的项目"}
+        )
+        assert res == {"ok": True, "session": "sess_abc123", "title": "我的项目"}
+        assert fake.renamed == [("sess_abc123", "我的项目")]
+    finally:
+        srv.stop()
+
+
+def test_session_rename_requires_id(server):
+    import urllib.error
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        server.client().post("/api/session/rename", {})
+    assert exc.value.code == 400

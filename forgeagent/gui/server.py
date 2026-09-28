@@ -301,6 +301,18 @@ class _Handler(BaseHTTPRequestHandler):
                 bridge.new_session()  # 隐藏的是当前会话 → 顺手开个新的，不留悬空引用
             return self._json({"ok": True, "session": sid})
 
+        # ---- 会话重命名：同隐藏一样走本地名单（alias 优先于自动标题）----
+        if u.path == "/api/session/rename":
+            sid = str(body.get("session_id") or "")
+            title = str(body.get("title") or "").strip()
+            if not sid:
+                return self._fail(400, "缺少 session_id")
+            sessions = getattr(self._owner, "sessions", None)
+            if sessions is None or not hasattr(sessions, "rename"):
+                return self._fail(501, "当前会话源不支持重命名（测试假件未实现）")
+            final = sessions.rename(sid, title)
+            return self._json({"ok": True, "session": sid, "title": final})
+
         # ---- 模型：自定义 profile 管理 / 切换 ----
         # profile = 一组注入 agentd 子进程的 AGENTD_* 环境变量（存
         # ~/.forgeagent/models.json）。切换 = 用新 env 重启 agentd 子进程，

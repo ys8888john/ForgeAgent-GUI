@@ -38,6 +38,7 @@ from forgeagent.gui.mcp_presets import (  # noqa: E402
     find_git_dir,
     merge_config,
     python_bin,
+    repo_root,
     venv_dir,
 )
 
@@ -54,8 +55,11 @@ def _read_json(path: Path) -> dict | None:
 def _print_list() -> None:
     print("可用预设：\n")
     for name, preset in PRESETS.items():
-        extra = "（需要 PATH 上有 git）" if preset.needs_git else ""
-        print(f"  {name:<7} pip 包 {preset.package:<20} {preset.summary}{extra}")
+        if preset.bundled_script:
+            print(f"  {name:<7} bundled（自带脚本，免安装）  {preset.summary}")
+        else:
+            extra = "（需要 PATH 上有 git）" if preset.needs_git else ""
+            print(f"  {name:<7} pip 包 {preset.package:<20} {preset.summary}{extra}")
     print("\n说明：filesystem 故意没做 —— agentd 的原生工具（read_file/glob/grep/"
           "write_file/edit）已经覆盖了本地文件操作，再加一个 MCP server 只会多一轮审批。")
     print(f"专用 venv 目录：{venv_dir()}")
@@ -132,7 +136,9 @@ def main() -> int:
 
     target_venv = Path(args.venv) if args.venv else venv_dir()
     target_cfg = Path(args.path) if args.path else config_path()
-    packages = [PRESETS[n].package for n in names]
+    bundled_names = [n for n in names if PRESETS[n].bundled_script]
+    pip_names = [n for n in names if not PRESETS[n].bundled_script]
+    packages = [PRESETS[n].package for n in pip_names]
 
     print("将要做的事：")
     print(f"  预设      ：{', '.join(names)}")
@@ -150,16 +156,25 @@ def main() -> int:
             print(f"[ git ] 找到 git 目录，会拼进该 server 的 env.PATH：{git_dir}")
         print()
 
-    py = _ensure_venv(target_venv, install=args.install)
-    _pip_install(
-        py or python_bin(target_venv),
-        packages,
-        install=args.install,
-        index_url=args.index_url,
-    )
-    print()
-
-    entries = build_entries(names, target_venv)
+    py = None
+    if pip_names:
+        py = _ensure_venv(target_venv, install=args.install)
+        _pip_install(
+            py or python_bin(target_venv),
+            packages,
+            install=args.install,
+            index_url=args.index_url,
+        )
+        print()
+        entries = build_entries(names, target_venv, root=repo_root())
+    else:
+        # 全 bundled：随仓库自带脚本，不需要建 venv / pip —— 解释器用"运行本脚本
+        # 的这个 python"（请用装着 mcp SDK 的那个 venv 跑；标准安装姿势下就是
+        # GUI/agentd 所在的 venv）。GUI 一键添加也是这个语义。
+        print("[bundled] 所选预设都随仓库自带，无需建 venv / pip。")
+        print(f"[bundled] 解释器：{sys.executable}（需已安装 mcp 包；缺了就 pip install mcp）")
+        entries = build_entries(names, Path(sys.executable).parent.parent, root=repo_root())
+        print()
     existing = _read_json(target_cfg)
     merged = merge_config(existing, entries)
 
@@ -178,7 +193,7 @@ def main() -> int:
         print("（干跑）加 --write 才会真的写；加 --install 才会真的装包。")
         return 0
 
-    if not py or not py.is_file():
+    if pip_names and (not py or not py.is_file()):
         print("[跳过] venv 还没建好就跑 --write 是不行的：先加 --install。")
         return 1
 
