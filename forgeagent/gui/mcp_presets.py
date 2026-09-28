@@ -18,6 +18,12 @@
 3. **不提供 filesystem 预设。** agentd 的原生工具（read_file / glob / grep / write_file / edit）
    已经把本地文件操作覆盖了；再加一个 filesystem MCP server，只是让模型多一个选择、
    多一次审批往返，是负收益。
+
+4. **bundled 预设（自研、随仓库分发）不依赖 PyPI。** 第三方包能否拉到受 pip
+    出网 / 镜像同步影响（实测这台沙箱连装过的 mcp-server-time 都拉不到），而
+    memory（笔记记忆）是日常最高频的"常用工具"，官方实现又都是 npm 系。
+    examples/memory_mcp_server.py 用本机已验证的 mcp SDK 自己实现，`command`
+    用运行环境解释器 —— 标准安装姿势下 GUI 与 agentd 同 venv，mcp 必在。
 """  # noqa: D400
 
 from __future__ import annotations
@@ -61,6 +67,9 @@ class Preset:
     probe_args: Mapping[str, Any] = field(default_factory=dict)
     """探针工具的参数；值里可以含 CWD_PLACEHOLDER。"""
 
+    bundled_script: str | None = None
+    """随仓库分发的 server 脚本（相对仓库根）。None = pip 安装型（用 module）。"""
+
 
 PRESETS: dict[str, Preset] = {
     "time": Preset(
@@ -87,6 +96,13 @@ PRESETS: dict[str, Preset] = {
         needs_git=True,
         probe_tool="git_status",
         probe_args={"repo_path": CWD_PLACEHOLDER},
+    ),
+    "memory": Preset(
+        name="memory",
+        package="",  # bundled：不需要安装任何包
+        module="",
+        summary="跨对话记忆：存/搜/列/删笔记（自研 bundled，零依赖）",
+        bundled_script="examples/memory_mcp_server.py",
     ),
 }
 """预设表。key 是命令行里用的短名（`--servers time,fetch`）。"""
@@ -163,6 +179,7 @@ def server_entry(
     venv: str | Path,
     *,
     git_path: str | None = None,
+    root: str | Path | None = None,
 ) -> dict:
     """拼出 mcp.json 里的一条 server 配置。
 
@@ -171,13 +188,23 @@ def server_entry(
     这些本来就在白名单里、会从 agentd 进程继承。只有「agentd 的 PATH 上没有 git」
     这种机器才需要在这里显式把 git 目录塞进去。
     """
-    entry: dict[str, Any] = {
-        "command": str(python_bin(venv)),
-        "args": ["-m", preset.module],
-    }
+    command = str(python_bin(venv))
+    if preset.bundled_script:
+        # bundled：command=解释器，args=[脚本绝对路径]（随仓库分发，无需装包）。
+        # 脚本仍需要运行环境里有 mcp SDK —— 标准安装姿势（GUI 与 agentd 同
+        # venv）必然满足；mcp-venv 里装过任何一个 pip 预设时也满足。
+        base = Path(root) if root is not None else repo_root()
+        entry: dict[str, Any] = {"command": command, "args": [str(base / preset.bundled_script)]}
+    else:
+        entry = {"command": command, "args": ["-m", preset.module]}
     if preset.needs_git:
         entry["env"] = {"PATH": path_with_git(git_path)}
     return entry
+
+
+def repo_root() -> Path:
+    """GUI 仓库根（examples/ 在这里）。"""
+    return Path(__file__).resolve().parents[2]
 
 
 def build_entries(
@@ -185,6 +212,7 @@ def build_entries(
     venv: str | Path,
     *,
     git_path: str | None = None,
+    root: str | Path | None = None,
 ) -> dict[str, dict]:
     """按短名列表生成 `{server名: 条目}`。未知短名抛 KeyError。"""
     out: dict[str, dict] = {}
@@ -192,7 +220,7 @@ def build_entries(
         preset = PRESETS.get(name)
         if preset is None:
             raise KeyError(name)
-        out[preset.name] = server_entry(preset, venv, git_path=git_path)
+        out[preset.name] = server_entry(preset, venv, git_path=git_path, root=root)
     return out
 
 
@@ -225,6 +253,7 @@ __all__ = [
     "merge_config",
     "path_with_git",
     "python_bin",
+    "repo_root",
     "server_entry",
     "venv_dir",
 ]

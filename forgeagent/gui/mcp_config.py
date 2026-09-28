@@ -91,3 +91,12 @@ def describe(path: str | Path | None = None) -> dict:
         "count": len(servers),
         "servers": [s.get("name") for s in servers],
     }
+
+
+def save_config_dict(data: dict, path: str | Path | None = None) -> None:
+    """把整份配置写回 mcp.json（原子替换：先写 .tmp 再换名，断电不留半个文件）。"""
+    p = Path(path) if path is not None else config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(p)

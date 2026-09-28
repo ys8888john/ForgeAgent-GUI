@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import sys
@@ -32,7 +33,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .bridge import Bridge
-from .mcp_config import config_path, load_mcp_servers
+from .mcp_config import config_path, load_mcp_servers, save_config_dict
+from .mcp_presets import PRESETS, build_entries, merge_config, python_bin, repo_root, venv_dir
 from .models import env_for, load_models, models_path, sanitize_profile, save_models
 from .sessions import SessionsSource
 
@@ -330,6 +332,53 @@ class _Handler(BaseHTTPRequestHandler):
             restarted = bridge.restart(mcp_servers=servers)
             return self._json({"ok": restarted.get("ok", False), "count": len(servers), "detail": restarted})
 
+        # ---- 常用工具一键添加（MCP 预设）----
+        # bundled（自研）直接写配置；pip 型只在"专用 venv 里已经装好包"时放行
+        # —— 包安装交给 scripts/install_local_mcp.py（沙箱/离线实测过 pip 出网
+        # 不可控，不在 HTTP 请求里现装）。
+        if u.path == "/api/mcp/presets/add":
+            name = str(body.get("name") or "").strip()
+            preset = PRESETS.get(name)
+            if preset is None:
+                return self._fail(404, f"没有这个预设: {name}")
+            if preset.bundled_script:
+                root = repo_root()
+                if not (root / preset.bundled_script).is_file():
+                    return self._fail(500, "仓库脚本缺失，请重新拉取 ForgeAgent-GUI")
+                venv = str(Path(sys.executable).parent.parent)
+            else:
+                py = python_bin(venv_dir())
+                if not py.is_file():
+                    return self._fail(
+                        400,
+                        "专用 venv 还没建：先运行 scripts/install_local_mcp.py --install --write",
+                    )
+                probe = subprocess.run(
+                    [str(py), "-c", f"import {preset.module}"],
+                    capture_output=True,
+                    timeout=15,
+                )
+                if probe.returncode != 0:
+                    return self._fail(
+                        400,
+                        f"{preset.package} 还没装进专用 venv："
+                        "运行 scripts/install_local_mcp.py --install --write"
+                        "（离线机器加 --index-url https://pypi.tuna.tsinghua.edu.cn/simple）",
+                    )
+                venv = str(venv_dir())
+            entry_root = repo_root()
+            entries = build_entries([name], venv, root=entry_root)
+            p = config_path()
+            try:
+                existing = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+            except ValueError:
+                existing = {}
+            save_config_dict(merge_config(existing if isinstance(existing, dict) else {}, entries), p)
+            servers = load_mcp_servers(p)
+            self._owner.mcp_servers = servers
+            restarted = bridge.restart(mcp_servers=servers)
+            return self._json({"ok": restarted.get("ok", False), "count": len(servers), "detail": restarted})
+
         if u.path == "/api/models":
             data = body.get("data") if isinstance(body.get("data"), dict) else {}
             profiles = [sanitize_profile(p) for p in data.get("profiles") or [] if isinstance(p, dict)]
@@ -382,6 +431,24 @@ class _Handler(BaseHTTPRequestHandler):
             except OSError:
                 raw = ""
             return self._json({"ok": True, "path": str(p), "text": raw})
+
+        if path == "/api/mcp/presets":
+            names = {s.get("name") for s in self._owner.mcp_servers}
+            return self._json(
+                {
+                    "ok": True,
+                    "presets": [
+                        {
+                            "name": item.name,
+                            "summary": item.summary,
+                            "package": item.package,
+                            "bundled": item.bundled_script is not None,
+                            "in_config": item.name in names,
+                        }
+                        for item in PRESETS.values()
+                    ],
+                }
+            )
 
         # ---- 自定义模型 profile ----
         # GET  /api/models           列表（env 里的 key 原样给，value 脱敏显示）

@@ -246,11 +246,24 @@ python scripts/install_local_mcp.py --install --write   # 真装（建 venv + pi
 python scripts/verify_local_mcp.py                      # 验证：真连一遍、真调一次探针
 ```
 
+**GUI 里也有入口**：「MCP」弹窗顶部有「常用工具」chips —— 点一下即把该预设
+写进 mcp.json 并重启 agentd（会话与历史保留）。服务端规则：
+
+- **memory（自研 bundled，零依赖）**：随仓库分发 `examples/memory_mcp_server.py`，
+  工具 `save_note / search_notes / list_notes / delete_note`，存储
+  `~/.forgeagent/memory.json`。不装包、离线可用，是唯一"点了就能用"的预设。
+  全链路（McpHub 真连真调、含持久化重开）在 `tests/test_memory_mcp_server.py`。
+- **time / fetch / git（pip 型）**：这三条**不装包**，只在你已经用
+  `scripts/install_local_mcp.py --install --write` 把包装进专用 venv 后才会写入；
+  没装会得到明确的 400 提示。GUI 内不做 pip 安装 —— pip 出网在受限环境不可控，
+  安装路径保留在脚本里人工执行。
+
 | 预设 | pip 包 | 用途 | 备注 |
 |---|---|---|---|
 | `time` | `mcp-server-time` | 时间/时区换算、时间加减 | |
-| `fetch` | `mcp-server-fetch` | 抓网页转 markdown | |
+| `fetch` | `mcp-server-fetch` | 抓取网页并转成 markdown | |
 | `git` | `mcp-server-git` | git status / log / diff / show | 需要 PATH 上有 git（见下） |
+| `memory` | **无（bundled）** | 跨对话记忆：存/搜/列/删笔记 | 自研、随仓库分发、零依赖 |
 
 生成的 `mcp.json` 长这样（`command` 是**专用 venv 的解释器绝对路径**，不是 `python`）：
 

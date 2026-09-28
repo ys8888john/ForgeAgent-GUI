@@ -431,3 +431,36 @@ def test_mcp_raw_round_trip(tmp_path, monkeypatch):
     finally:
         srv.stop()
 
+
+def test_mcp_presets_endpoint_and_bundled_add(tmp_path, monkeypatch):
+    """预设列表 + bundled（memory）一键添加：写盘、同步内存、经 restart 生效。"""
+    cfg = tmp_path / "mcp.json"
+    monkeypatch.setenv("FORGEAGENT_MCP_CONFIG", str(cfg))
+    srv = _server_with(_FakeSessions())
+    try:
+        listing = srv.client().get("/api/mcp/presets")
+        names = {p["name"]: p for p in listing["presets"]}
+        assert {"time", "fetch", "git", "memory"} <= set(names)
+        assert names["memory"]["bundled"] is True
+        assert names["memory"]["in_config"] is False
+
+        res = srv.client().post("/api/mcp/presets/add", {"name": "memory"})
+        assert res["ok"] is True and res["count"] == 1
+        saved = json.loads(cfg.read_text(encoding="utf-8"))
+        args = saved["mcpServers"]["memory"]["args"]
+        assert len(args) == 1 and args[0].endswith("examples/memory_mcp_server.py")
+        # bundled 不假装能 pip：没有 package
+        assert saved["mcpServers"]["memory"]["command"].endswith(("python", "python3", "bin/python")) or "python" in saved["mcpServers"]["memory"]["command"]
+
+        # 再加一次：chips 的"已添加"链路 —— 幂等（同名覆盖，不报错）
+        res2 = srv.client().post("/api/mcp/presets/add", {"name": "memory"})
+        assert res2["ok"] is True and res2["count"] == 1
+
+        # 未知预设：404
+        import urllib.error
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            srv.client().post("/api/mcp/presets/add", {"name": "nope"})
+        assert exc.value.code == 404
+    finally:
+        srv.stop()
+

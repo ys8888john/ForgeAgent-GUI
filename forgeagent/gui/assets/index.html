@@ -221,6 +221,12 @@
   .md-table { border-collapse: collapse; margin: 6px 0; font-size: 13px; }
   .md-table th, .md-table td { border: 1px solid var(--border); padding: 3px 10px; text-align: left; }
   .md-table th { background: var(--bg-soft); }
+  .m-chip {
+    display: inline-block; margin: 2px 6px 2px 0; padding: 3px 10px; font-size: 12px;
+    border: 1px solid var(--border); border-radius: 12px; cursor: pointer;
+  }
+  .m-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .m-chip[disabled] { opacity: .5; cursor: default; color: var(--text-dim); }
   .hint { font-size: 11px; color: var(--text-dim); padding: 0 16px 8px; background: var(--bg-soft); }
 
   #log-pane {
@@ -352,6 +358,7 @@
       <div class="m-box">
         <div class="m-title">MCP 配置（mcp.json）</div>
         <div class="m-note" id="mcp-banner">保存后 agentd 会重启（会话与历史保留），新配置下一轮生效。</div>
+        <div class="m-note"><b>常用工具：</b><span id="mcp-presets">加载中…</span></div>
         <textarea id="mcp-text" class="m-textarea" rows="14" spellcheck="false"></textarea>
         <div class="m-actions">
           <button id="mcp-save">保存并重启 agentd</button>
@@ -1268,6 +1275,7 @@
       mcpText.value = res.text || "";
       document.getElementById("mcp-banner").textContent =
         "文件：" + (res.path || "") + " · 保存后 agentd 重启（会话与历史保留）";
+      loadMcpPresets();
       mcpPane.classList.add("open");
     } catch (e) {
       showErrorBubble("读取失败", String((e && e.message) || e));
@@ -1276,6 +1284,51 @@
   document.getElementById("mcp-close").addEventListener("click", function () {
     mcpPane.classList.remove("open");
   });
+
+  // 常用工具 chips：memory（自研 bundled）等。in_config=true 的显示"已添加"
+  // 并禁用；点击未添加的走 POST /api/mcp/presets/add（写盘 + 重启 agentd）。
+  async function loadMcpPresets() {
+    var box = document.getElementById("mcp-presets");
+    box.textContent = "加载中…";
+    try {
+      var res = await api("/api/mcp/presets");
+      box.textContent = "";
+      (res.presets || []).forEach(function (p) {
+        var chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "m-chip";
+        chip.title = p.summary + (p.bundled ? "（自带，免安装）" : "（需要 pip 安装）");
+        chip.textContent = p.in_config ? p.name + " · 已添加" : p.name;
+        if (p.in_config) chip.disabled = true;
+        chip.addEventListener("click", function () {
+          if (chip.disabled) return;
+          chip.disabled = true;
+          api("/api/mcp/presets/add", { method: "POST", body: { name: p.name } })
+            .then(function (r) {
+              if (!r.ok) {
+                var detail = r.detail && r.detail.error ? r.detail.error : "未知错误";
+                showErrorBubble("添加失败", detail);
+                chip.disabled = false;
+                return null;
+              }
+              setStatus("ready", "常用工具已添加：" + p.name + "（agentd 已重启）");
+              return loadMcp().then(function () { return api("/api/mcp/raw"); });
+            })
+            .then(function (raw) {
+              if (raw) { mcpText.value = raw.text || mcpText.value; }
+              return loadMcpPresets();
+            })
+            .catch(function (e) {
+              showErrorBubble("添加失败", String((e && e.message) || e));
+              chip.disabled = false;
+            });
+        });
+        box.appendChild(chip);
+      });
+    } catch (e) {
+      box.textContent = "预设加载失败";
+    }
+  }
   document.getElementById("mcp-save").addEventListener("click", async function () {
     var btn = document.getElementById("mcp-save");
     btn.disabled = true;

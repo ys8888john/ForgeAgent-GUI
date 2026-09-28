@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -173,8 +174,15 @@ def test_merge_does_not_mutate_inputs():
 def test_presets_are_wellformed():
     for key, preset in PRESETS.items():
         assert key == preset.name
-        assert preset.package and preset.module and preset.summary
-        assert preset.module.islower(), f"{key} 的模块名应该是 snake_case"
+        if preset.bundled_script:
+            # bundled：不装包，module 语义为空；脚本路径必须真实存在
+            from forgeagent.gui.mcp_presets import repo_root
+
+            assert (repo_root() / preset.bundled_script).is_file()
+            assert preset.summary
+        else:
+            assert preset.package and preset.module and preset.summary
+            assert preset.module.islower(), f"{key} 的模块名应该是 snake_case"
         assert "__" not in (preset.probe_tool or ""), "探针工具名里不该带命名空间前缀"
 
 
@@ -247,3 +255,21 @@ def test_git_entry_env_survives_roundtrip(tmp_path):
     path.write_text(json.dumps(config), encoding="utf-8")
     server = load_mcp_servers(path)[0]
     assert [p["name"] for p in server["env"]] == ["PATH"]
+
+
+def test_memory_preset_is_bundled_and_points_at_repo_script():
+    """memory 是自研 bundled 预设：不装包，entry 直接指向仓库脚本。"""
+    from forgeagent.gui.mcp_presets import PRESETS, repo_root, server_entry
+
+    preset = PRESETS["memory"]
+    assert preset.bundled_script is not None
+    assert (repo_root() / preset.bundled_script).is_file()
+
+    entry = server_entry(preset, Path(sys.executable).parent.parent)  # venv 目录
+    # command=解释器；args=[脚本绝对路径]；没有 -m、没有 env 噪音
+    assert entry["command"] == sys.executable
+    assert entry["args"] == [str(repo_root() / "examples/memory_mcp_server.py")]
+    assert "env" not in entry
+
+    config = merge_config({"mcpServers": {"echo": {"command": "x", "args": [], "env": []}}}, {"memory": entry})
+    assert set(config["mcpServers"]) == {"echo", "memory"}  # 合并不覆盖别人
