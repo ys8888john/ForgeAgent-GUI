@@ -127,26 +127,43 @@ class Bridge:
         return {"ok": True, "session": sid}
 
     def resume_session(self, session_id: str) -> dict:
-        """续聊一个已有会话：**不**再开新会话，直接把 client 的 sessionId 换成旧的。
+        """续聊一个已有会话：优先走 ACP session/load，旧 agentd 回退纯切换。
 
-        为什么这样就够：agentd 内核在每次 handle() 开头都会从 SQLite 把整个历史
-        load 进上下文（kernel/handle.py），所以只要 prompt 用的是旧 id，
-        LLM 自然就接着上次的上下文聊——"续聊"在 agentd 侧本就免费，GUI 只需
-        别去调 session/new、复用旧 id 即可。存在性校验在 server 层做（它握有
-        会话库只读视图），这里只管切换。
+        **为什么要 load**：重启 GUI 后旧 sessionId 的历史在库里，但会话级配置
+        （工具的 cwd、MCP 声明）只存在于当初那次 session/new —— 不恢复的话，
+        新一轮的工具调用会落在错误的目录、MCP 工具集体消失。load 成功 = agentd
+        真正把配置绑回去；失败（老版本 agentd 回 -32601 等）退回旧姿势：只切
+        sessionId（历史照常接上）。存在性校验在 server 层做（它握有只读视图），
+        这里只管协议与切换。
         """
         if self._closed.is_set():
             return {"ok": False, "error": "已关闭"}
         if not session_id:
             return {"ok": False, "error": "缺少 session_id"}
-        self._client.session_id = session_id
+        self._client.session_id = session_id  # 先记上；load 成功后原样确认
+        loaded = False
+        load = getattr(self._client, "load_session", None)
+        if callable(load):
+            try:
+                self._submit(load(session_id)).result(timeout=15)
+                loaded = True
+            except Exception as exc:  # noqa: BLE001 - 老版 agentd / 瞬时故障都按旧行为走
+                self._emit(
+                    type="status",
+                    state="ready",
+                    message=f"会话 {session_id[:8]} 恢复降级：{type(exc).__name__}",
+                )
         self._busy = False
         self._emit(
             type="status",
             state="ready",
-            message=f"已载入会话 {session_id[:8]}（可继续聊）",
+            message=(
+                f"已载入会话 {session_id[:8]}（工具 cwd / MCP 已恢复）"
+                if loaded
+                else f"已载入会话 {session_id[:8]}（可继续聊）"
+            ),
         )
-        return {"ok": True, "session": session_id}
+        return {"ok": True, "session": session_id, "loaded": loaded}
 
     def restart(self, env: dict[str, str] | None = None) -> dict:
         """换环境变量重启 agentd 子进程（切换模型用），尽量保住当前会话 id。

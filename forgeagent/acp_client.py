@@ -181,6 +181,7 @@ M_INIT = _method(AGENT_METHODS, ("initialize",), "initialize")
 M_NEW = _method(AGENT_METHODS, ("session_new", "new_session"), "session/new")
 M_PROMPT = _method(AGENT_METHODS, ("session_prompt", "prompt"), "session/prompt")
 M_CANCEL = _method(AGENT_METHODS, ("session_cancel", "cancel"), "session/cancel")
+M_LOAD = _method(AGENT_METHODS, ("session_load", "load_session"), "session/load")
 M_UPDATE = _method(CLIENT_METHODS, ("session_update",), "session/update")
 # agent -> client 的审批请求。这个是**反方向**的方法（agent 发起、客户端应答），
 # 但它同样登记在 CLIENT_METHODS 里（"客户端要实现的那些方法"）。
@@ -294,6 +295,26 @@ class AcpClient:
         resp = await self._call(M_NEW, {"cwd": self._cwd, "mcpServers": self._mcp_servers})
         self.session_id = resp["result"]["sessionId"]
         return self.session_id
+
+    async def load_session(self, session_id: str) -> str:
+        """把一个已存在的 agentd 会话重新绑定到本进程（ACP 的 session/load）。
+
+        重启后旧 sessionId 的历史还在库里，但 cwd / MCP 声明只存在于当初那次
+        session/new —— 不发 load 的话，续出来的工具调用会落在错误的目录、
+        MCP 工具也集体消失。这是标准 ACP 协议动作；旧版 agentd 会回 -32601，
+        调用方（bridge）收到错误按旧姿势回退（纯切 sessionId）。
+        """
+        await self._call(
+            M_LOAD,
+            {
+                "sessionId": session_id,
+                "cwd": self._cwd,
+                "mcpServers": self._mcp_servers,
+            },
+        )
+        # LoadSessionResponse 不带 sessionId（协议就这么定义），成功即生效
+        self.session_id = session_id
+        return session_id
 
     async def close(self) -> None:
         """收摊：停掉后台读取任务，终止子进程。"""

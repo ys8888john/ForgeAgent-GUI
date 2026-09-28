@@ -516,20 +516,23 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   `stop_reason="cancelled"`，运行中的工具卡片收成「已取消」，已流出的文本
   照常保留在会话里。注意 GUI 的 `cancel()` 必须走通知（无 id、不等响应）——
   若按请求发，agentd 会回 -32601，"停止"变成报错。
-  **没做**的是：diff 视图。正在执行的子进程命令不受通知影响，靠
+  **edit/write 卡片带 diff 视图**：agentd 给这两类工具输出 unified diff
+  （行首 `--- / +++ / @@ / - / +`），前端逐行着色（+ 绿 / - 红 / @@ 灰），
+  落库重放的定格卡同样着色。正在执行的子进程命令不受取消通知影响，靠
   `AGENTD_TOOLS_TIMEOUT` 超时兜底。
 - **工具卡片已进历史**：agentd 把每张完成的卡片整体落一条 role="tool_record"
   行（payload.tool_record 是 call_id/title/kind/status/output 全量记录；被拒绝的
   也会以 cancelled 状态落库）。续聊/刷新时 GUI 的只读视图把它解出来，前端用
   流式卡片同一套 DOM 重放"定格卡"。工卡记录**从不进 LLM 上下文**（agentd 加载
   history 时过滤），上下文里只有对话结论。
-- HTML 前端里的 Markdown 是**自带的极简实现**（标题、粗斜体、列表、行内代码、围栏代码块），
-  没引外部库 —— 离线也能用，代价是高亮、表格这些还没做。
+- HTML 前端里的 Markdown 是**自带的极简实现**（标题、粗斜体、列表、行内代码、
+  围栏代码块、**表格**），没引外部库 —— 离线也能用，代价是代码高亮还没有。
 - **会话侧栏 / 续聊已可用**（参考 WorkBuddy 的会话侧栏）：
   左侧栏列出 `~/.agentd/sessions.db` 里的历史会话（标题、最近时间、条数、末条预览），
-  点一下即「续聊」。agentd 内核在每轮 `handle()` 开头会把整段历史 load 进上下文
-  （`agentd/kernel/kernel.py:95`），所以 GUI 只要复用旧 `sessionId`、不去调 `session/new`，
-  LLM 自然就接着上次聊；「+ 新对话」则走 ACP `session/new` 开干净会话。
+  点一下即「续聊」：走标准 ACP `session/load`（带 cwd / mcpServers 把会话重新
+  载入 agentd，修掉了"重启后工具落在错目录、MCP 全消失"的隐患；旧版 agentd
+  回 -32601 时自动退回旧的纯切换姿势，历史照常接上）；「+ 新对话」则走
+  ACP `session/new` 开干净会话。
   GUI 只读那一份 SQLite 库（另开 read-only 连接，WAL 并发读不冲突），不碰写方。
   后端接口：`GET /api/sessions`、`GET /api/session/<id>`、`POST /api/session/resume`、
   `POST /api/session/new`。

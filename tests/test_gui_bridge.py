@@ -31,12 +31,14 @@ class _FakeClient:
         fail_start: bool = False,
         fail_prompt: bool = False,
         fail_cancel: bool = False,
+        fail_load: bool = False,
         gate=None,
     ) -> None:
         self._chunks = chunks
         self._fail_start = fail_start
         self._fail_prompt = fail_prompt
         self._fail_cancel = fail_cancel
+        self._fail_load = fail_load
         # gate 不为 None 时，吐完增量后会一直等它被 set 才收尾。
         # 用来把「上一轮还没结束」变成确定状态，而不是靠时序碰运气。
         self._gate = gate
@@ -45,6 +47,7 @@ class _FakeClient:
         self.started = False
         self.closed = False
         self.cancel_calls = 0
+        self.load_calls: list[str] = []
 
     async def start(self) -> None:
         if self._fail_start:
@@ -58,6 +61,12 @@ class _FakeClient:
         self.cancel_calls += 1
         if self._fail_cancel:
             raise RuntimeError("cancel 炸了")
+
+    async def load_session(self, session_id: str) -> str:
+        self.load_calls.append(session_id)
+        if self._fail_load:
+            raise RuntimeError("session/load 不被支持")
+        return session_id
 
     async def new_session(self) -> str:
         # 给 Bridge.new_session 用的假实现：记下一个新 id 即可
@@ -179,6 +188,53 @@ def test_cancel_without_client_support_is_error():
         ok = bridge.cancel()
         assert ok["ok"] is False
         assert "不支持取消" in ok["error"]
+    finally:
+        bridge.close()
+
+
+def test_resume_calls_load_session_when_supported():
+    """续聊优先走 ACP session/load：agentd 端把 cwd/MCP 重新绑回去。"""
+    fake = _FakeClient()
+    bridge = Bridge(client=fake)
+    try:
+        out = bridge.resume_session("sess_old12345")
+        assert out["ok"] is True and out["loaded"] is True
+        assert fake.load_calls == ["sess_old12345"]
+        assert fake.session_id == "sess_old12345"
+    finally:
+        bridge.close()
+
+
+def test_resume_falls_back_when_load_fails():
+    """旧版 agentd 回 -32601（以异常模拟）：历史续聊照常，只是没恢复 cwd/MCP。"""
+    fake = _FakeClient(fail_load=True)
+    bridge = Bridge(client=fake)
+    try:
+        out = bridge.resume_session("sess_old12345")
+        assert out["ok"] is True and out["loaded"] is False
+        assert fake.session_id == "sess_old12345"  # 兜底切换没丢
+    finally:
+        bridge.close()
+
+
+def test_resume_falls_back_without_load_support():
+    """精简版 client 连 load_session 都没有：退回纯切换，不能 AttributeError。"""
+
+    class _LegacyClient:
+        session_id = ""
+        stderr_lines: list[str] = []
+
+        async def start(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    bridge = Bridge(client=_LegacyClient())
+    try:
+        out = bridge.resume_session("sess_old12345")
+        assert out["ok"] is True and out["loaded"] is False
+        assert bridge._client.session_id == "sess_old12345"
     finally:
         bridge.close()
 
