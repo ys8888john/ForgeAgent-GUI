@@ -189,6 +189,10 @@ class _FakeSessions:
         self._sessions = sessions or []
         self._history = history or []
         self._exists = exists
+        self.hidden: list[str] = []
+
+    def hide(self, session_id: str) -> None:
+        self.hidden.append(session_id)
 
     def list_meta(self):
         return self._sessions
@@ -370,6 +374,25 @@ def test_permission_answer_requires_token():
         with pytest.raises(urllib.error.HTTPError) as exc:
             urllib.request.urlopen(req, timeout=5)
         assert exc.value.code == 401
+    finally:
+        srv.stop()
+
+
+def test_mode_endpoint_round_trip(server):
+    """POST /api/mode 必须原样转发 bridge.set_mode（背后是 session/set_mode）。"""
+    res = server.client().post("/api/mode", {"mode_id": "single"})
+    assert res == {"ok": True, "mode_id": "single"}
+    assert server.bridge._client.set_mode_calls == ["single"]
+
+
+def test_session_hide_round_trip():
+    """POST /api/session/hide 落到会话源的 hide（侧栏隐藏，数据库不动）。"""
+    fake_sessions = _FakeSessions()
+    srv = _server_with(fake_sessions)
+    try:
+        res = srv.client().post("/api/session/hide", {"session_id": "sess_abc123"})
+        assert res == {"ok": True, "session": "sess_abc123"}
+        assert fake_sessions.hidden == ["sess_abc123"]
     finally:
         srv.stop()
 

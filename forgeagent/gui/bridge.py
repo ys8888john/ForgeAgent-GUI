@@ -104,7 +104,18 @@ class Bridge:
             state="ready",
             message=f"已连接  会话 {self._client.session_id[:8]}",
         )
+        self._emit_modes()
         return {"ok": True, "session": self._client.session_id}
+
+    def _emit_modes(self) -> None:
+        """把 agentd 声明的会话模式推给前端（None = 旧 agentd，前端隐藏切换器）。"""
+        modes = getattr(self._client, "modes", None)
+        if isinstance(modes, dict):
+            self._emit(
+                type="modes",
+                available=modes.get("availableModes") or [],
+                current=str(modes.get("currentModeId") or "agent"),
+            )
 
     def new_session(self) -> dict:
         """开一个全新的 agentd 会话（对应 GUI 的「新对话」按钮）。
@@ -124,6 +135,7 @@ class Bridge:
             state="ready",
             message=f"新会话 {sid[:8]}",
         )
+        self._emit_modes()
         return {"ok": True, "session": sid}
 
     def resume_session(self, session_id: str) -> dict:
@@ -154,6 +166,7 @@ class Bridge:
                     message=f"会话 {session_id[:8]} 恢复降级：{type(exc).__name__}",
                 )
         self._busy = False
+        self._emit_modes()  # load 响应带了新的模式声明（含 current），一并刷新前端
         self._emit(
             type="status",
             state="ready",
@@ -220,6 +233,27 @@ class Bridge:
         self._emit(type="session", session_id=target)
         self._emit(type="status", state="ready", message=message)
         return {"ok": True, "session": target, "model_env": bool(env)}
+
+    def set_mode(self, mode_id: str) -> dict:
+        """切换会话模式（前端 header 的模式下拉框）。
+
+        把 id 原样发给 agentd（session/set_mode）；模式是**下一轮 prompt 生效**
+        的会话级设置，本地不校验取值 —— 可用集合以 agentd 声明为准。
+        """
+        if self._closed.is_set():
+            return {"ok": False, "error": "已关闭"}
+        mode_id = (mode_id or "").strip()
+        if not mode_id:
+            return {"ok": False, "error": "缺少 mode_id"}
+        setter = getattr(self._client, "set_session_mode", None)
+        if not callable(setter):
+            return {"ok": False, "error": "当前客户端不支持切换模式"}
+        try:
+            self._submit(setter(mode_id)).result(timeout=10)
+        except Exception as exc:  # noqa: BLE001 - 边界处统一转错误
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        self._emit(type="mode", mode_id=mode_id)
+        return {"ok": True, "mode_id": mode_id}
 
     def send(self, text: str) -> dict:
         """发一轮。立即返回，真正的流式在后台线程跑。"""

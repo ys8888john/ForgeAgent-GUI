@@ -93,3 +93,34 @@ def test_missing_empty_session_returns_none(tmp_path):
     conn.close()
 
     assert SessionsSource(db).get_history("s_nope") is None
+
+
+def test_hide_persists_and_filters_list_meta(tmp_path):
+    """hide 后 list_meta 必须剔除该会话；新开实例（等价重启 GUI）仍保持剔除。
+
+    隐藏不等于删除：get_history 照样能查到完整历史。
+    """
+    db = tmp_path / "sessions.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)
+    for sid in ("s1", "s2"):
+        conn.execute("INSERT INTO sessions (id, created_at) VALUES (?, 0)", (sid,))
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, payload, created_at)"
+            " VALUES ('s1', 'user', ?, ?, 0)",
+            (f"hi {sid}", json.dumps({"session_id": sid, "role": "user", "content": f"hi {sid}"})),
+        )
+    conn.commit()
+    conn.close()
+
+    src = SessionsSource(db)
+    assert [m["id"] for m in src.list_meta()] == ["s1", "s2"]
+
+    src.hide("s1")
+    assert [m["id"] for m in src.list_meta()] == ["s2"]
+
+    # 持久化：新实例（对齐 GUI 重启）读同一份 hidden_sessions.json
+    fresh = SessionsSource(db)
+    assert [m["id"] for m in fresh.list_meta()] == ["s2"]
+    # 隐藏 ≠ 删除：历史照常可读
+    assert fresh.get_history("s1") is not None

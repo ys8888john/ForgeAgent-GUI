@@ -533,9 +533,21 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   载入 agentd，修掉了"重启后工具落在错目录、MCP 全消失"的隐患；旧版 agentd
   回 -32601 时自动退回旧的纯切换姿势，历史照常接上）；「+ 新对话」则走
   ACP `session/new` 开干净会话。
+  **启动即续接**：打开窗口自动续接最近一条有内容的会话（与手动点击同一条
+  resume 路径），不再每次都停在"真空新会话"。
+  **会话"删除"＝侧栏隐藏**：侧栏条目 hover 有 ×，确认后写
+  `~/.forgeagent/hidden_sessions.json` 移出列表 —— agentd 的库是它独占的
+  写方，GUI 不碰；要真清数据用 `agentd/scripts/sessions.py`。隐藏 ≠ 删除：
+  历史仍可查询，恢复显示删掉 hidden 文件即可。
   GUI 只读那一份 SQLite 库（另开 read-only 连接，WAL 并发读不冲突），不碰写方。
   后端接口：`GET /api/sessions`、`GET /api/session/<id>`、`POST /api/session/resume`、
-  `POST /api/session/new`。
+  `POST /api/session/new`、`POST /api/session/hide`、`POST /api/mode`。
+- **会话模式切换**：顶栏模式下拉（agent ↔ single），经 `session/set_mode`
+  生效（下一轮 prompt 起新语义，agentd 响应里声明的取值为准）。agentd 未
+  声明 modes（旧版本）时下拉框自动隐藏。
+- **消息气泡"复制"按钮**：hover 气泡右上角，复制的是渲染前的原文。
+- **Electron 壳记住窗口状态**：尺寸/位置存 userData/window-state.json
+  （防抖保存、重启恢复），第二块屏拔掉等越界场景自动回退到默认位置。
 
 ## 测试
 

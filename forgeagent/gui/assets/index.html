@@ -54,6 +54,7 @@
     font-size: 12px; padding: 3px 9px; color: var(--accent); border-color: var(--accent);
   }
   #sidebar-head #new-chat:hover { background: #e8f0fe; }
+  #mode-select { max-width: 120px; font-size: 12px; padding: 3px 6px; }
   #session-list {
     flex: 1 1 auto; overflow-y: auto; padding: 8px;
     display: flex; flex-direction: column; gap: 6px;
@@ -109,7 +110,20 @@
     flex: 1 1 auto; overflow-y: auto;
     padding: 20px 16px; display: flex; flex-direction: column; gap: 14px;
   }
-  .bubble { max-width: 82%; padding: 10px 14px; border-radius: 12px; white-space: normal; }
+  .bubble { position: relative; max-width: 82%; padding: 10px 14px; border-radius: 12px; white-space: normal; }
+  .copy-btn {
+    position: absolute; top: 4px; right: 6px; display: none;
+    font-size: 11px; color: var(--text-dim); background: var(--bg-soft);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; cursor: pointer;
+  }
+  .bubble:hover .copy-btn { display: inline-block; }
+  .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .session-item .si-del {
+    position: absolute; right: 8px; top: 8px; display: none;
+    border: none; background: none; color: var(--text-dim); cursor: pointer; font-size: 13px;
+  }
+  .session-item:hover .si-del { display: inline-block; }
+  .session-item .si-del:hover { color: #d2504a; }
   .bubble.user {
     align-self: flex-end; background: var(--user-bg);
     border: 1px solid var(--user-border); border-bottom-right-radius: 4px;
@@ -310,6 +324,7 @@
       <span id="status"><span id="dot"></span><span id="status-text">启动中…</span></span>
       <select id="model-select" title="切换模型（切换会重启 agentd，当前会话保留）"></select>
       <span class="spacer"></span>
+      <select id="mode-select" title="会话模式（下一轮起生效）" style="display:none"></select>
       <button id="models-btn">模型管理</button>
       <button id="log-btn">agent 日志</button>
     </header>
@@ -378,6 +393,7 @@
   var messages = document.getElementById("messages");
   var input = document.getElementById("input");
   var sendBtn = document.getElementById("send");
+  var modeSel = document.getElementById("mode-select");
   var stopBtn = document.getElementById("stop");
   var dot = document.getElementById("dot");
   var statusText = document.getElementById("status-text");
@@ -620,6 +636,46 @@
     return el;
   }
 
+  // 气泡右上角的「复制」按钮：hover 出现，一键带走原文（用 dataset.raw，
+  // 渲染后的 textContent 会带上强制的换行和不可见字符）。
+  function attachCopy(el) {
+    if (el._copyBtn) return;
+    var btn = document.createElement("button");
+    btn.className = "copy-btn";
+    btn.type = "button";
+    btn.textContent = "复制";
+    btn.title = "复制原文";
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var raw = el.dataset.raw || el.textContent || "";
+      navigator.clipboard.writeText(raw).then(function () {
+        btn.textContent = "已复制";
+        setTimeout(function () { btn.textContent = "复制"; }, 1200);
+      }).catch(function () { /* 无法复制就不打扰 */ });
+    });
+    el.appendChild(btn);
+    el._copyBtn = btn;
+  }
+
+  // 模式切换器：agentd 在 new/load 响应里声明可用模式（availableModes），
+  // 每次会话变化（start/new/resume）bridge 会推 modes 事件来刷新。
+  // 空列表 = 对接的是没实现模式声明的旧 agentd —— 隐藏下拉框，一切照旧。
+  function renderModes(ev) {
+    var list = ev.available || [];
+    if (!list.length) { modeSel.style.display = "none"; return; }
+    modeSel.style.display = "";
+    modeSel.innerHTML = "";
+    list.forEach(function (m) {
+      var opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.name || m.id;
+      if (m.description) opt.title = m.description;
+      modeSel.appendChild(opt);
+    });
+    modeSel.value = ev.current || "agent";
+    modeSel.disabled = false;
+  }
+
   function appendText(el, text) {
     el.dataset.raw += text;
     el._body.innerHTML = renderMd(el.dataset.raw);
@@ -820,6 +876,21 @@
       prev.textContent = s.preview || "";
 
       b.appendChild(title); b.appendChild(meta); b.appendChild(prev);
+      var del = document.createElement("button");
+      del.className = "si-del";
+      del.type = "button";
+      del.textContent = "×";
+      del.title = "从侧栏移除该对话（数据库不动）";
+      del.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (!window.confirm("从侧栏移除对话「" + (s.title || s.id) + "」？\n只在列表里隐藏，数据仍在数据库；要彻底清理请用 agentd 的 scripts/sessions.py。")) {
+          return;
+        }
+        api("/api/session/hide", { method: "POST", body: { session_id: s.id } })
+          .then(function () { return loadSessions(); })
+          .catch(function (err) { showErrorBubble("移除失败", String((err && err.message) || err)); });
+      });
+      b.appendChild(del);
       b.addEventListener("click", function () { resumeSession(s.id); });
       box.appendChild(b);
     });
@@ -830,6 +901,18 @@
     for (var i = 0; i < items.length; i++) {
       items[i].classList.toggle("active", items[i].dataset.id === id);
     }
+  }
+
+  // 打开窗口不再永远是"真空新会话"：若有历史会话，自动续接最近的一条
+  // （走与手动点击完全相同的 resumeSession 路径 —— 历史重放 + session/load）。
+  async function maybeResumeLast() {
+    try {
+      var res = await api("/api/sessions");
+      var items = (res.sessions || []).filter(function (s) { return (s.msg_count || 0) > 0; });
+      if (items.length && !busy) {
+        await resumeSession(items[0].id);
+      }
+    } catch (e) { /* 静默失败：恢复不了就停在空会话，不影响使用 */ }
   }
 
   async function loadSessions() {
@@ -1137,12 +1220,30 @@
   }
 
   document.getElementById("new-chat").addEventListener("click", newChat);
+  modeSel.addEventListener("change", function () {
+    modeSel.disabled = true;
+    api("/api/mode", { method: "POST", body: { mode_id: modeSel.value } })
+      .catch(function (e) { showErrorBubble("模式切换失败", String((e && e.message) || e)); })
+      .finally(function () { modeSel.disabled = false; });
+  });
 
   // ---- 事件处理 ----
 
   function handle(ev) {
     if (ev.type === "command") {
       runCommand(ev.cmd);
+      return;
+    }
+
+    if (ev.type === "modes") {
+      renderModes(ev);
+      return;
+    }
+
+    if (ev.type === "mode") {
+      // agentd 已把模式切到对应值；只同步下拉框选中项
+      if (modeSel) { modeSel.value = ev.mode_id; }
+      setStatus("ready", "模式已切为 " + ev.mode_id + "（下一轮生效）");
       return;
     }
 
@@ -1159,6 +1260,7 @@
     if (ev.type === "user") {
       var b = newBubble("user");
       b.textContent = ev.text;
+      attachCopy(b);
       if (autoScroll) scrollToBottom();
       toolCards = {};  // 新一轮，卡片表清空（id 理论上不冲突，防御性重置）
       setBusy(true);
@@ -1194,6 +1296,7 @@
     if (ev.type === "done") {
       if (current) {
         current.dataset.raw = current.dataset.raw; // 保持不变
+        attachCopy(current);  // 本轮回答定格：给气泡配上复制按钮
         current = null;
       }
       if (ev.stop === "cancelled") {
@@ -1357,6 +1460,7 @@
         reportFatal("bootstrap", e);
       }
       loadSessions();        // 把历史会话填进侧栏
+      maybeResumeLast();     // 有历史就自动续接最近一条（不阻塞后续 boot）
       loadMcp();             // 侧栏底部显示 MCP 配置摘要
       loadModels();          // header 的模型下拉框
       pump();

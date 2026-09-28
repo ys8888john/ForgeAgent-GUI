@@ -57,6 +57,27 @@ class SessionsSource:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = db_path() if path is None else Path(path)
+        # "删除"的落地方式：**侧栏隐藏**（hidden_sessions.json，与库同目录）。
+        # agentd 的会话库写方是它自己（这里只读不碰），ACP 也没有 session/delete；
+        # 对齐主流产品的做法是把会话移出列表。真要清数据用 agentd 的
+        # scripts/sessions.py。不提供 unhide 界面，删 hidden 文件即可恢复显示。
+        self.hidden_path = self.path.parent / "hidden_sessions.json"
+
+    def _load_hidden(self) -> set[str]:
+        try:
+            data = json.loads(self.hidden_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return set()
+        return {sid for sid in data if isinstance(sid, str)} if isinstance(data, list) else set()
+
+    def hide(self, session_id: str) -> None:
+        """把会话移出版侧栏（幂等写回 hidden 名单）。"""
+        hidden = self._load_hidden()
+        hidden.add(session_id)
+        self.hidden_path.parent.mkdir(parents=True, exist_ok=True)
+        self.hidden_path.write_text(
+            json.dumps(sorted(hidden), ensure_ascii=False), encoding="utf-8"
+        )
 
     def list_meta(self) -> list[dict]:
         """已有会话的摘要，按最近活动降序。给侧栏用。"""
@@ -82,7 +103,10 @@ class SessionsSource:
             conn.close()
 
         out: list[dict] = []
+        hidden = self._load_hidden()
         for sid, created, count, first, last in rows:
+            if sid in hidden:
+                continue  # 已被用户"删除"（隐藏）的会话不出现在侧栏
             title = (first or "").strip().split("\n", 1)[0] or "（空会话）"
             preview = (last or "").strip().replace("\r\n", "\n").split("\n", 1)[0]
             out.append(

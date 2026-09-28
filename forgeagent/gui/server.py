@@ -282,6 +282,23 @@ class _Handler(BaseHTTPRequestHandler):
         if u.path == "/api/session/new":
             return self._json(bridge.new_session())
 
+        # ---- 模式切换：转 bridge（session/set_mode，下一轮 prompt 生效）----
+        if u.path == "/api/mode":
+            return self._json(bridge.set_mode(str(body.get("mode_id") or "")))
+
+        # ---- 会话"删除"：侧栏隐藏（库写方在 agentd，GUI 只维护本地名单）----
+        if u.path == "/api/session/hide":
+            sid = str(body.get("session_id") or "")
+            if not sid:
+                return self._fail(400, "缺少 session_id")
+            sessions = getattr(self._owner, "sessions", None)
+            if sessions is None or not hasattr(sessions, "hide"):
+                return self._fail(501, "当前会话源不支持隐藏（测试假件未实现）")
+            sessions.hide(sid)
+            if bridge._client.session_id == sid:  # noqa: SLF001 - 同包内共知成员
+                bridge.new_session()  # 隐藏的是当前会话 → 顺手开个新的，不留悬空引用
+            return self._json({"ok": True, "session": sid})
+
         # ---- 模型：自定义 profile 管理 / 切换 ----
         # profile = 一组注入 agentd 子进程的 AGENTD_* 环境变量（存
         # ~/.forgeagent/models.json）。切换 = 用新 env 重启 agentd 子进程，

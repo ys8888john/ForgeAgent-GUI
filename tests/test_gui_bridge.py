@@ -32,6 +32,7 @@ class _FakeClient:
         fail_prompt: bool = False,
         fail_cancel: bool = False,
         fail_load: bool = False,
+        modes: dict | None = None,
         gate=None,
     ) -> None:
         self._chunks = chunks
@@ -48,6 +49,9 @@ class _FakeClient:
         self.closed = False
         self.cancel_calls = 0
         self.load_calls: list[str] = []
+        self.set_mode_calls: list[str] = []
+        # 会话模式声明（None = 模拟旧 agentd，没声明 modes）
+        self.modes = modes
 
     async def start(self) -> None:
         if self._fail_start:
@@ -67,6 +71,10 @@ class _FakeClient:
         if self._fail_load:
             raise RuntimeError("session/load 不被支持")
         return session_id
+
+    async def set_session_mode(self, mode_id: str) -> str:
+        self.set_mode_calls.append(mode_id)
+        return mode_id
 
     async def new_session(self) -> str:
         # 给 Bridge.new_session 用的假实现：记下一个新 id 即可
@@ -235,6 +243,70 @@ def test_resume_falls_back_without_load_support():
         out = bridge.resume_session("sess_old12345")
         assert out["ok"] is True and out["loaded"] is False
         assert bridge._client.session_id == "sess_old12345"
+    finally:
+        bridge.close()
+
+
+# ---- 会话模式：切换与声明推送 ----
+
+def test_set_mode_forwards_to_client_and_emits_mode_event():
+    fake = _FakeClient()
+    bridge = Bridge(client=fake)
+    try:
+        out = bridge.set_mode("single")
+        assert out == {"ok": True, "mode_id": "single"}
+        assert fake.set_mode_calls == ["single"]
+        evs = bridge.next_events(timeout=0.5)
+        assert evs and evs[0] == {"type": "mode", "mode_id": "single"}
+    finally:
+        bridge.close()
+
+
+def test_set_mode_without_support_returns_error():
+    class _LegacyModeClient:
+        session_id = "sess_x"
+        stderr_lines: list[str] = []
+
+        async def start(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    bridge = Bridge(client=_LegacyModeClient())
+    try:
+        out = bridge.set_mode("agent")
+        assert out["ok"] is False
+        assert "不支持" in out["error"]
+    finally:
+        bridge.close()
+
+
+def test_set_mode_rejected_after_close():
+    bridge = Bridge(client=_FakeClient())
+    bridge.close()
+    assert bridge.set_mode("agent")["ok"] is False
+
+
+def test_modes_event_emitted_after_start_when_declared():
+    """agentd 若声明了 modes，start 之后 bridge 必须把它转成 modes 事件。"""
+    fake = _FakeClient(
+        modes={
+            "currentModeId": "agent",
+            "availableModes": [
+                {"id": "agent", "name": "Agent（默认）"},
+                {"id": "single", "name": "单次对话"},
+            ],
+        }
+    )
+    bridge = Bridge(client=fake)
+    try:
+        bridge.start()
+        evs = bridge.next_events(timeout=0.5)
+        ev = [e for e in evs if e.get("type") == "modes"]
+        assert ev, f"start 后应推送 modes 事件，实际：{[e.get('type') for e in evs]}"
+        assert ev[0]["current"] == "agent"
+        assert [m["id"] for m in ev[0]["available"]] == ["agent", "single"]
     finally:
         bridge.close()
 

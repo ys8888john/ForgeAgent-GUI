@@ -16,6 +16,7 @@
 
 const { app, BrowserWindow } = require("electron");
 const { spawn } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 
 // electron/ 的父目录就是项目根（forgeagent 包在这里，cwd 设到这才能让 `python -m forgeagent.gui` 导入到包）
@@ -29,6 +30,43 @@ const AGENTD_CWD = process.env.FORGEAGENT_CWD || process.cwd();
 
 let pyProc = null;
 let win = null;
+
+// ---- 窗口状态持久化（尺寸/位置记忆）----
+// 存 userData/window-state.json。商用桌面应用的基本礼貌：用户把窗口拉到
+// 第二个屏幕、调大字号，重启后不该回到初始态。恢复时做越界保护：
+// 分辨率变了 / 第二块屏拔了，就把位置丢掉只留尺寸（落在默认位置）。
+const STATE_FILE = () => path.join(app.getPath("userData"), "window-state.json");
+
+function loadWindowState() {
+  const fallback = { width: 1120, height: 780 };
+  try {
+    const st = JSON.parse(fs.readFileSync(STATE_FILE(), "utf-8"));
+    if (typeof st.width !== "number" || typeof st.height !== "number") return fallback;
+    const { screen } = require("electron");
+    const wa = screen.getPrimaryDisplay().workArea;
+    const onScreen =
+      typeof st.x === "number" &&
+      typeof st.y === "number" &&
+      st.x >= wa.x - 40 &&
+      st.y >= wa.y - 40 &&
+      st.x < wa.x + wa.width &&
+      st.y < wa.y + wa.height;
+    return onScreen ? st : { width: st.width, height: st.height };
+  } catch (_) {
+    return fallback; // 没存过 / 坏文件：初始尺寸
+  }
+}
+
+function saveWindowState() {
+  if (!win) return;
+  try {
+    const b = win.getBounds();
+    fs.mkdirSync(path.dirname(STATE_FILE()), { recursive: true });
+    fs.writeFileSync(STATE_FILE(), JSON.stringify(b), "utf-8");
+  } catch (_) {
+    /* 磁盘抽风不拦退出流程 */
+  }
+}
 
 // 拉起 `python -m forgeagent.gui --mode serve`，逐行读 stdout 抓 UI_READY <url>。
 function startBackend() {
@@ -70,9 +108,12 @@ function startBackend() {
 }
 
 function createWindow(url) {
+  const state = loadWindowState();
   win = new BrowserWindow({
-    width: 1120,
-    height: 780,
+    width: state.width,
+    height: state.height,
+    x: state.x,
+    y: state.y,
     minWidth: 720,
     minHeight: 480,
     backgroundColor: "#ffffff",
@@ -81,6 +122,14 @@ function createWindow(url) {
   });
   if (process.platform !== "darwin") win.removeMenu();
   win.loadURL(url);
+  let saveTimer = null;
+  const scheduleSave = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveWindowState, 500); // 防抖：拖动中别疯狂写盘
+  };
+  win.on("moved", scheduleSave);
+  win.on("resized", scheduleSave);
+  win.on("close", saveWindowState);
   win.on("closed", () => {
     win = null;
   });

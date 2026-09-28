@@ -182,6 +182,7 @@ M_NEW = _method(AGENT_METHODS, ("session_new", "new_session"), "session/new")
 M_PROMPT = _method(AGENT_METHODS, ("session_prompt", "prompt"), "session/prompt")
 M_CANCEL = _method(AGENT_METHODS, ("session_cancel", "cancel"), "session/cancel")
 M_LOAD = _method(AGENT_METHODS, ("session_load", "load_session"), "session/load")
+M_SET_MODE = _method(AGENT_METHODS, ("session_set_mode", "set_session_mode"), "session/set_mode")
 M_UPDATE = _method(CLIENT_METHODS, ("session_update",), "session/update")
 # agent -> client 的审批请求。这个是**反方向**的方法（agent 发起、客户端应答），
 # 但它同样登记在 CLIENT_METHODS 里（"客户端要实现的那些方法"）。
@@ -233,6 +234,10 @@ class AcpClient:
         self._next_id = 0
         self._pending: dict[int, asyncio.Future[dict]] = {}
         self._notifications: asyncio.Queue[dict] = asyncio.Queue()
+        # 会话模式状态：new/load 响应里由 agentd 声明（None = 旧 agentd 没声明，
+        # 界面据此隐藏切换器）。current_mode 是 UI 自报的期望值，权威在 agentd。
+        self.modes: dict | None = None
+        self.current_mode: str = "agent"
 
         # 待审批的请求：request_id -> Future[optionId]。
         # 由 _read_stdout 填、answer_permission 解、_settle_permission 回帧。
@@ -294,6 +299,8 @@ class AcpClient:
             self._log(f"[审批] 切会话，作废 {stale} 个未决审批")
         resp = await self._call(M_NEW, {"cwd": self._cwd, "mcpServers": self._mcp_servers})
         self.session_id = resp["result"]["sessionId"]
+        # agentd 会在 new/load 响应里声明 session modes（id + 人话名/描述）
+        self.modes = resp["result"].get("modes")
         return self.session_id
 
     async def load_session(self, session_id: str) -> str:
@@ -304,7 +311,7 @@ class AcpClient:
         MCP 工具也集体消失。这是标准 ACP 协议动作；旧版 agentd 会回 -32601，
         调用方（bridge）收到错误按旧姿势回退（纯切 sessionId）。
         """
-        await self._call(
+        resp = await self._call(
             M_LOAD,
             {
                 "sessionId": session_id,
@@ -314,7 +321,21 @@ class AcpClient:
         )
         # LoadSessionResponse 不带 sessionId（协议就这么定义），成功即生效
         self.session_id = session_id
+        self.modes = resp["result"].get("modes")
         return session_id
+
+    async def set_session_mode(self, mode_id: str) -> str:
+        """切换本会话的模式（ACP session/set_mode）。
+
+        可用模式由 new/load 响应的 modes.availableModes 声明；这里把用户选的
+        id 原样发过去，下一轮 prompt 生效。agentd 会回一帧 result（null），
+        所以走 _call 等响应而不是通知。
+        """
+        if not self.session_id or self._proc is None:
+            raise AcpError("agent 进程尚未启动")
+        await self._call(M_SET_MODE, {"sessionId": self.session_id, "modeId": mode_id})
+        self.current_mode = mode_id
+        return mode_id
 
     async def close(self) -> None:
         """收摊：停掉后台读取任务，终止子进程。"""
