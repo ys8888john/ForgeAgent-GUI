@@ -258,6 +258,12 @@ python scripts/verify_local_mcp.py                      # 验证：真连一遍�
   不装包、离线可用，是"点了就能用"的两条预设。
   **sqlite 的安全模型**：默认只读（`mode=ro` 连接 + 只收 SELECT），传
   `--allow-write` 才能写；写工具不带只读声明，会走过 agentd 审批弹窗。
+- **browser（自研 bundled，零依赖）**：`examples/browser_mcp_server.py`，
+  工具 `open_url`（默认浏览器打开网页）与 `open_search`（打开搜索结果页，
+  引擎 bing/google/duckduckgo 白名单）。目的是把"搜→读"闭环的最后一步
+  （人工查看/登录/JS 页面）交回用户浏览器；只收 http/https，
+  **每次调用都经过审批**（工具未声明只读），测试/CI 用 `--stub` 模式不真开。
+  verify 脚本对该预设只列工具、不跑探针（probe_tool 留空同理）。
   全链路（McpHub 真连真调、含持久化重开）在 `tests/test_memory_mcp_server.py`。
 - **time / fetch / git（pip 型）**：这三条**不装包**，只在你已经用
   `scripts/install_local_mcp.py --install --write` 把包装进专用 venv 后才会写入；
@@ -274,6 +280,7 @@ python scripts/verify_local_mcp.py                      # 验证：真连一遍�
 | `git` | `mcp-server-git` | git status / log / diff / show | 需要 PATH 上有 git（见下） |
 | `memory` | **无（bundled）** | 跨对话记忆：存/搜/列/删笔记 | 自研、随仓库分发、零依赖 | 
 | `sqlite` | **无（bundled）** | SQLite 只读查询（写需 --allow-write + 审批） | 自研、随仓库分发、零依赖 | 
+| `browser` | **无（bundled）** | 在用户浏览器打开网页/搜索结果页 | 自研、每次调用走审批、测试用 --stub | 
 
 生成的 `mcp.json` 长这样（`command` 是**专用 venv 的解释器绝对路径**，不是 `python`）：
 

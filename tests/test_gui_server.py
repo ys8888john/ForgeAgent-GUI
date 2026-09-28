@@ -445,7 +445,7 @@ def test_mcp_presets_endpoint_and_bundled_add(tmp_path, monkeypatch):
     try:
         listing = srv.client().get("/api/mcp/presets")
         names = {p["name"]: p for p in listing["presets"]}
-        assert {"time", "fetch", "git", "memory", "sqlite"} <= set(names)
+        assert {"time", "fetch", "git", "memory", "sqlite", "browser"} <= set(names)
         assert names["memory"]["bundled"] is True
         assert names["memory"]["in_config"] is False
 

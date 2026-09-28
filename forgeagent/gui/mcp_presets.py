@@ -112,6 +112,13 @@ PRESETS: dict[str, Preset] = {
         bundled_script="examples/sqlite_mcp_server.py",
         probe_tool="list_tables",
     ),
+    "browser": Preset(
+        name="browser",
+        package="",  # bundled：不需要安装任何包（stdlib webbrowser）
+        module="",
+        summary="浏览器：在用户默认浏览器打开网页 / 搜索结果页（每次调用走审批）",
+        bundled_script="examples/browser_mcp_server.py",
+    ),
 }
 """预设表。key 是命令行里用的短名（`--servers time,fetch`）。"""
 

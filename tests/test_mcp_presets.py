@@ -283,3 +283,15 @@ def test_sqlite_preset_is_bundled_and_declares_probe():
 
     entry = server_entry(preset, Path(sys.executable).parent.parent)
     assert entry["args"] == [str(mcp_presets.repo_root() / "examples/sqlite_mcp_server.py")]
+
+
+def test_browser_preset_is_bundled_and_probe_is_disabled():
+    """browser 预设：probe_tool 必须留空 —— verify 不允许真的拉起用户浏览器。"""
+    preset = PRESETS["browser"]
+    assert preset.bundled_script is not None
+    assert (mcp_presets.repo_root() / preset.bundled_script).is_file()
+    assert preset.package == "" and preset.module == ""
+    assert preset.probe_tool is None
+
+    entry = server_entry(preset, Path(sys.executable).parent.parent)
+    assert entry["args"] == [str(mcp_presets.repo_root() / "examples/browser_mcp_server.py")]
