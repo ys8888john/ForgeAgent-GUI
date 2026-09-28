@@ -708,6 +708,14 @@ class AcpClient:
             self._apply_tool(turn, update)
             return
 
+        if kind == "current_mode_update":
+            # agentd 在 set_session_mode 后广播的标准通知：把本会话的"当前模式"
+            # 同步进 client 状态（下拉框选中项由 UI 依据它刷新，见 bridge）。
+            mode_id = str(update.get("currentModeId") or update.get("current_mode_id") or "")
+            if mode_id:
+                self.current_mode = mode_id
+            return
+
         chunk = _collect_text(update)
         if not chunk:
             return

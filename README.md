@@ -549,7 +549,13 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   流式卡片同一套 DOM 重放"定格卡"。工卡记录**从不进 LLM 上下文**（agentd 加载
   history 时过滤），上下文里只有对话结论。
 - HTML 前端里的 Markdown 是**自带的极简实现**（标题、粗斜体、列表、行内代码、
-  围栏代码块、**表格**），没引外部库 —— 离线也能用，代价是代码高亮还没有。
+  围栏代码块、**表格**），没引外部库 —— 离线也能用。
+  **代码块已带保守语法高亮**（字符串/注释/关键字/数字，python/js/json/sql/bash），
+  纯函数实现（`/* HIGHLIGHT-BEGIN/END */` 标记段），由
+  `tests/test_frontend_highlight.py` 用 node 真实执行断言；代码块 hover 可一键复制。
+- **深色模式**：header 的 🌓 按钮在 明亮 / 暗色 / 跟随系统 三态间循环
+  （localStorage 持久化，`prefers-color-scheme` 变化即时响应）；实现只覆盖
+  CSS 变量（`[data-theme="dark"]`），组件样式零改动。
 - **会话侧栏 / 续聊已可用**（参考 WorkBuddy 的会话侧栏）：
   左侧栏列出 `~/.agentd/sessions.db` 里的历史会话（标题、最近时间、条数、末条预览），
   点一下即「续聊」：走标准 ACP `session/load`（带 cwd / mcpServers 把会话重新

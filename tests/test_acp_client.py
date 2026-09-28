@@ -473,3 +473,23 @@ def test_client_reads_additional_dirs_from_env(monkeypatch):
 
 def test_client_additional_dirs_default_empty():
     assert AcpClient().additional_directories == []
+
+
+def test_current_mode_update_syncs_client_state():
+    """agentd 广播的 current_mode_update 要更新 client 状态（不做正文本折叠）。"""
+    client = AcpClient()
+    assert client.current_mode == "agent"
+    turn = Turn(user="hi")
+    client._apply_update(
+        turn,
+        {
+            "params": {
+                "update": {
+                    "sessionUpdate": "current_mode_update",
+                    "currentModeId": "single",
+                }
+            }
+        },
+    )
+    assert client.current_mode == "single"
+    assert turn.text == "" and turn.thought == ""   # 不污染正文/思考

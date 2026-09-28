@@ -17,10 +17,35 @@
     --danger: #b42318;
     --danger-bg: #fef3f2;
     --code-bg: #f4f5f7;
+    color-scheme: light;
+    --hl-str: #0a7d33;
+    --hl-com: #6b7280;
+    --hl-kw: #b42318;
+    --hl-num: #1d4ed8;
     --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
             "Helvetica Neue", Arial, "Microsoft YaHei", "PingFang SC", sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas,
             "Liberation Mono", "Courier New", monospace;
+  }
+  /* 深色主题：只覆盖变量，不碰组件选择器 —— 对标桌面应用的明暗双主题。
+     header 的 🌓 按钮切换 documentElement.dataset.theme 并存 localStorage；
+     mode=auto 跟随系统 prefers-color-scheme。 */
+  :root[data-theme="dark"] {
+    --bg: #17181c;
+    --bg-soft: #1f2126;
+    --border: #2e3138;
+    --text: #e6e7ea;
+    --text-dim: #9aa0aa;
+    --user-bg: #1d2a44;
+    --user-border: #2c4a7c;
+    --danger: #f97066;
+    --danger-bg: #332022;
+    --code-bg: #141518;
+    --hl-str: #7ee2a8;
+    --hl-com: #8b949e;
+    --hl-kw: #ff7b72;
+    --hl-num: #79b8ff;
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -226,6 +251,17 @@
   .md-table { border-collapse: collapse; margin: 6px 0; font-size: 13px; }
   .md-table th, .md-table td { border: 1px solid var(--border); padding: 3px 10px; text-align: left; }
   .md-table th { background: var(--bg-soft); }
+  .token-str { color: var(--hl-str); }
+  .token-com { color: var(--hl-com); font-style: italic; }
+  .token-kw { color: var(--hl-kw); }
+  .token-num { color: var(--hl-num); }
+  .codeblock { position: relative; }
+  .codeblock:hover .copy-btn { display: inline-block; }
+  #messages:empty::before {
+    content: "开始你的第一条对话吧\A· Enter 发送，Shift+Enter 换行 · 左侧可续聊历史会话";
+    white-space: pre-line; text-align: center; color: var(--text-dim);
+    padding-top: 18vh; font-size: 13px;
+  }
   .m-chip {
     display: inline-block; margin: 2px 6px 2px 0; padding: 3px 10px; font-size: 12px;
     border: 1px solid var(--border); border-radius: 12px; cursor: pointer;
@@ -343,6 +379,7 @@
       <button id="mcp-btn" title="编辑 mcp.json（保存并重启 agentd 生效）">MCP</button>
       <button id="models-btn">模型管理</button>
       <button id="log-btn">agent 日志</button>
+      <button id="theme-btn" title="切换 明亮 / 暗色 / 跟随系统">🌓</button>
     </header>
 
     <div id="messages"></div>
@@ -513,7 +550,7 @@
     var s = escapeHtml(src);
     var blocks = [];
     s = s.replace(/```([a-zA-Z0-9]*)\n?([\s\S]*?)```/g, function (m, lang, code) {
-      blocks.push(code.replace(/\n$/, ""));
+      blocks.push({ code: code.replace(/\n$/, ""), lang: lang });
       return "\u0000BLOCK" + (blocks.length - 1) + "\u0000";
     });
     s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
@@ -534,7 +571,13 @@
       return "<p>" + chunk.replace(/\n/g, "<br>") + "</p>";
     }).join("");
     s = s.replace(/\u0000BLOCK(\d+)\u0000/g, function (m, i) {
-      return "<pre><code>" + blocks[Number(i)] + "</code></pre>";
+      var blk = blocks[Number(i)];
+      return (
+        '<div class="codeblock">' +
+        '<button class="copy-btn code-copy" type="button">复制</button>' +
+        "<pre><code>" + forgeHighlight(blk.code, blk.lang) + "</code></pre>" +
+        "</div>"
+      );
     });
     return s;
   }
@@ -725,6 +768,77 @@
     modeSel.value = ev.current || "agent";
     modeSel.disabled = false;
   }
+
+  /* HIGHLIGHT-BEGIN
+     —— 保守的零依赖语法高亮（node 断言测试锚定本段，
+     见 tests/test_frontend_highlight.py：改动请保持纯字符串 in/out、不碰 DOM） */
+  var FORGE_KW = {
+    python: "def class return if elif else for while import from as with try except finally raise yield lambda in is not and or pass break continue global assert async await del match case nonlocal",
+    js: "function return if else for while var let const class extends import export from of new typeof instanceof this super try catch finally throw async await yield break continue switch case default delete void debugger do static get set",
+    json: "true false null",
+    sql: "select from where insert into values update set delete create table view index drop alter join left right inner outer on as and or not null group by order limit having distinct primary key foreign references",
+    bash: "if then elif else fi for while do done case esac function export echo cd ls cp mv rm mkdir rmdir cat grep sed awk curl chmod chown return exit local readonly set source alias"
+  };
+  function forgeHighlight(code, lang) {
+    // 输入是 escapeHtml 之后的文本（&lt; 等保持原样输出），只负责给
+    // 字符串/注释/关键字/数字套 span —— 够把代码读出颜色，不做语言级解析。
+    var table = FORGE_KW[String(lang || "").toLowerCase()] || FORGE_KW.js;
+    var kwMap = {};
+    table.split(/\s+/).forEach(function (w) { if (w) kwMap[w] = 1; });
+    var out = "";
+    var i = 0;
+    var n = code.length;
+    var low = String(lang || "").toLowerCase();
+    while (i < n) {
+      var ch = code.charAt(i);
+      var two = code.substr(i, 2);
+      if (ch === '"' || ch === "'" || ch === "`") {
+        var j = i + 1;
+        while (j < n) {
+          if (code.charAt(j) === "\\") { j += 2; continue; }
+          if (code.charAt(j) === ch) { j += 1; break; }
+          j += 1;
+        }
+        out += '<span class="token-str">' + code.slice(i, j) + "</span>";
+        i = j;
+        continue;
+      }
+      if (two === "/*") {
+        var blockEnd = code.indexOf("*/", i + 2);
+        var blockStop = blockEnd === -1 ? n : blockEnd + 2;
+        out += '<span class="token-com">' + code.slice(i, blockStop) + "</span>";
+        i = blockStop;
+        continue;
+      }
+      var isLineComment =
+        (two === "//" && low !== "python") ||
+        (ch === "#" && (low === "python" || low === "bash"));
+      if (isLineComment) {
+        var lineEnd = code.indexOf("\n", i);
+        if (lineEnd === -1) lineEnd = n;
+        out += '<span class="token-com">' + code.slice(i, lineEnd) + "</span>";
+        i = lineEnd;   // 换行符走默认分支原样输出
+        continue;
+      }
+      var word = /^[A-Za-z_$][\w$]*/.exec(code.slice(i));
+      if (word) {
+        var w = word[0];
+        out += kwMap[w] ? '<span class="token-kw">' + w + "</span>" : w;
+        i += w.length;
+        continue;
+      }
+      var num = /^[0-9][\w.]*/.exec(code.slice(i));
+      if (num) {
+        out += '<span class="token-num">' + num[0] + "</span>";
+        i += num[0].length;
+        continue;
+      }
+      out += ch;
+      i += 1;
+    }
+    return out;
+  }
+  /* HIGHLIGHT-END */
 
   function appendText(el, text) {
     el.dataset.raw += text;
@@ -1556,6 +1670,46 @@
       // 发送失败也得能继续等：agentd 若真的没停下，done 事件自己会来收场
       stopBtn.disabled = false;
     });
+  });
+
+  // ---- 主题：亮 / 暗 / 跟随系统（三态循环，持久化 localStorage）----
+  var THEME_KEY = "fg-theme";
+  var themeBtn = document.getElementById("theme-btn");
+  var themeMode = localStorage.getItem(THEME_KEY) || "auto";
+  function applyTheme(mode) {
+    var systemDark =
+      window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    var dark = mode === "dark" || (mode === "auto" && systemDark);
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    themeBtn.textContent = dark ? "☀️" : "🌙";
+    themeBtn.title = "主题：" + (mode === "auto" ? "跟随系统" : mode === "dark" ? "暗色" : "明亮") +
+      "（点击切换）";
+  }
+  applyTheme(themeMode);
+  themeBtn.addEventListener("click", function () {
+    themeMode = themeMode === "dark" ? "light" : themeMode === "light" ? "auto" : "dark";
+    localStorage.setItem(THEME_KEY, themeMode);
+    applyTheme(themeMode);
+  });
+  if (window.matchMedia) {
+    var schemeMq = window.matchMedia("(prefers-color-scheme: dark)");
+    if (schemeMq.addEventListener) {
+      schemeMq.addEventListener("change", function () {
+        if (themeMode === "auto") applyTheme(themeMode);
+      });
+    }
+  }
+
+  // 代码块复制（事件委托：renderMd 生成的按钮不需要逐个绑）
+  document.addEventListener("click", function (e) {
+    var target = e.target;
+    if (!target || !target.classList || !target.classList.contains("code-copy")) return;
+    var pre = target.parentElement ? target.parentElement.querySelector("pre") : null;
+    var text = pre ? pre.textContent : "";
+    navigator.clipboard.writeText(text).then(function () {
+      target.textContent = "已复制";
+      setTimeout(function () { target.textContent = "复制"; }, 1200);
+    }).catch(function () { /* 环境不支持就不打扰 */ });
   });
 
   // ---- 日志面板 ----
