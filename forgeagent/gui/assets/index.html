@@ -1006,6 +1006,18 @@
     toolCards = {};
     clearPermissions();  // 切会话时旧弹窗对应的请求已经作废（协议层会回 cancelled）
     (history || []).forEach(function (m) {
+      if (m.role === "tool_record") {
+        // agentd 落库的工具卡片记录：复用流式卡片的原地更新逻辑画一张"定格卡"
+        var rec = m.tool_record || {};
+        upsertTool({
+          id: rec.call_id || ("static-" + (m.name || Math.random())),
+          title: rec.title || m.content || "工具",
+          kind: rec.kind || "other",
+          status: rec.status || "completed",
+          output: rec.output || ""
+        });
+        return;
+      }
       addStaticBubble(m.role, m.content || "");
     });
     if (autoScroll) scrollToBottom();

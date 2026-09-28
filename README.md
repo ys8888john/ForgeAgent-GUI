@@ -518,8 +518,11 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   若按请求发，agentd 会回 -32601，"停止"变成报错。
   **没做**的是：diff 视图。正在执行的子进程命令不受通知影响，靠
   `AGENTD_TOOLS_TIMEOUT` 超时兜底。
-- **工具卡片是本轮内的临时状态**，不进历史。刷新/续聊只重放落库的 user/assistant
-  文本，工具卡片不会重现（内核只把最终回复落库，不存中间的 tool 往返）。
+- **工具卡片已进历史**：agentd 把每张完成的卡片整体落一条 role="tool_record"
+  行（payload.tool_record 是 call_id/title/kind/status/output 全量记录；被拒绝的
+  也会以 cancelled 状态落库）。续聊/刷新时 GUI 的只读视图把它解出来，前端用
+  流式卡片同一套 DOM 重放"定格卡"。工卡记录**从不进 LLM 上下文**（agentd 加载
+  history 时过滤），上下文里只有对话结论。
 - HTML 前端里的 Markdown 是**自带的极简实现**（标题、粗斜体、列表、行内代码、围栏代码块），
   没引外部库 —— 离线也能用，代价是高亮、表格这些还没做。
 - **会话侧栏 / 续聊已可用**（参考 WorkBuddy 的会话侧栏）：

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -100,13 +101,18 @@ class SessionsSource:
 
         返回的是 [{role, name, content}]，前端直接拿来渲染气泡。
         name 可能为 None（只有 tool 角色用），原样带过去，前端按需处理。
+
+        role="tool_record" 是 agentd 侧的工具卡片记录（payload.tool_record 是
+        整个调用：call_id/title/kind/status/output）。冗余列 content 只存了
+        title，卡片要完整重放就得把 payload 解开带出去 —— 前端按
+        renderToolCard 渲染。解析失败当空卡片处理，一行坏数据不能拖垮整个回放。
         """
         conn = _open(self.path)
         if conn is None:
             return None
         try:
             rows = conn.execute(
-                "SELECT role, name, content FROM messages "
+                "SELECT role, name, content, payload FROM messages "
                 "WHERE session_id = ? ORDER BY seq",
                 (session_id,),
             ).fetchall()
@@ -127,9 +133,16 @@ class SessionsSource:
                 exists = False
             return [] if exists else None
 
-        return [
-            {"role": r, "name": n, "content": (c or "")} for r, n, c in rows
-        ]
+        out: list[dict] = []
+        for r, n, c, p in rows:
+            item = {"role": r, "name": n, "content": (c or "")}
+            if r == "tool_record":
+                try:
+                    item["tool_record"] = (json.loads(p) or {}).get("tool_record") or {}
+                except ValueError:
+                    item["tool_record"] = {}
+            out.append(item)
+        return out
 
     def exists(self, session_id: str) -> bool:
         conn = _open(self.path)
