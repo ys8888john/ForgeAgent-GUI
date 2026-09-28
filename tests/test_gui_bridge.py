@@ -30,11 +30,13 @@ class _FakeClient:
         *,
         fail_start: bool = False,
         fail_prompt: bool = False,
+        fail_cancel: bool = False,
         gate=None,
     ) -> None:
         self._chunks = chunks
         self._fail_start = fail_start
         self._fail_prompt = fail_prompt
+        self._fail_cancel = fail_cancel
         # gate 不为 None 时，吐完增量后会一直等它被 set 才收尾。
         # 用来把「上一轮还没结束」变成确定状态，而不是靠时序碰运气。
         self._gate = gate
@@ -42,6 +44,7 @@ class _FakeClient:
         self.stderr_lines = ["[agentd] 自动选用 Ollama 模型: qwen3.5:9b-text"]
         self.started = False
         self.closed = False
+        self.cancel_calls = 0
 
     async def start(self) -> None:
         if self._fail_start:
@@ -50,6 +53,11 @@ class _FakeClient:
 
     async def close(self) -> None:
         self.closed = True
+
+    async def cancel(self) -> None:
+        self.cancel_calls += 1
+        if self._fail_cancel:
+            raise RuntimeError("cancel 炸了")
 
     async def new_session(self) -> str:
         # 给 Bridge.new_session 用的假实现：记下一个新 id 即可
@@ -125,6 +133,55 @@ def test_start_failure_emits_error_status_with_log():
 
 
 # ---- send / 流式 ----
+
+# ---- cancel ----
+
+def test_cancel_calls_client_once_and_returns_ok():
+    """「停止」按钮那一跳：bridge 只递通知，立刻返回。"""
+    fake = _FakeClient()
+    bridge = Bridge(client=fake)
+    try:
+        assert bridge.cancel() == {"ok": True}
+        assert fake.cancel_calls == 1
+    finally:
+        bridge.close()
+
+
+def test_cancel_client_failure_is_surfaced():
+    """协议层 cancel 抛了错必须带到返回值里，不能假装停掉了。"""
+    fake = _FakeClient(fail_cancel=True)
+    bridge = Bridge(client=fake)
+    try:
+        ok = bridge.cancel()
+        assert ok["ok"] is False
+        assert "cancel 炸了" in ok["error"]
+    finally:
+        bridge.close()
+
+
+def test_cancel_without_client_support_is_error():
+    """老式 client 没有 cancel 能力：给人话，不能 AttributeError。"""
+
+    class _NoCancelClient:
+        """只实现 Bridge 真正需要的成员，故意没有 cancel。"""
+
+        session_id = "sess_no_cancel"
+        stderr_lines: list[str] = []
+
+        async def start(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    bridge = Bridge(client=_NoCancelClient())
+    try:
+        ok = bridge.cancel()
+        assert ok["ok"] is False
+        assert "不支持取消" in ok["error"]
+    finally:
+        bridge.close()
+
 
 def test_send_emits_user_then_deltas_then_done():
     fake = _FakeClient(chunks=("你", "好"))

@@ -107,6 +107,14 @@ def test_stderr_endpoint(server):
     ]
 
 
+def test_cancel_endpoint_round_trip(server):
+    """POST /api/cancel 必须到达协议层 —— 「停止」按钮的完整一跳。"""
+    res = server.client().post("/api/cancel", {})
+    assert res == {"ok": True}
+    fake = server.bridge._client
+    assert fake.cancel_calls == 1
+
+
 def test_path_traversal_is_refused(server):
     import urllib.error
     import urllib.request

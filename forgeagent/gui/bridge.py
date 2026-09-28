@@ -217,6 +217,26 @@ class Bridge:
         self._submit(self._stream(text))
         return {"ok": True}
 
+    def cancel(self) -> dict:
+        """停止当前正在生成的一轮（界面上那个「停止」按钮）。
+
+        只负责把 session/cancel 通知递给 agentd；真正的中断在内核里发生，
+        本轮 prompt 随后以 stop_reason="cancelled" 正常收流 —— 所以 busy 保持
+        true，等真正的 done 事件到了再由 _stream 复位。发一次通知是幂等的：
+        重复点、没有进行中的轮次，agentd 侧都是无害 no-op。
+        """
+        if self._closed.is_set():
+            return {"ok": False, "error": "已关闭"}
+        cancel = getattr(self._client, "cancel", None)
+        if not callable(cancel):
+            # 老/精简版 client 没有取消能力。给人话，别让它变成 AttributeError。
+            return {"ok": False, "error": "当前客户端不支持取消"}
+        try:
+            self._submit(cancel()).result(timeout=5)
+        except Exception as exc:  # noqa: BLE001 - 边界处统一转错误
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True}
+
     # ---- 审批：agent -> 界面 -> agent 的往返 ----
 
     def _on_permission(self, req: PermissionRequest) -> None:

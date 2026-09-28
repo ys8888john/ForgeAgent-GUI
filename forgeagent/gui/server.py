@@ -262,6 +262,12 @@ class _Handler(BaseHTTPRequestHandler):
                 bridge.answer_permission(body.get("id"), str(body.get("option_id") or ""))
             )
 
+        # ---- 停止：把正在生成的一轮按用户意愿收掉 ----
+        # 只递通知不等待；agentd 在下一个流式/工具边界收尾，done 事件会带来
+        # stop_reason="cancelled"，前端借此把运行中的工具卡片收成「已取消」。
+        if u.path == "/api/cancel":
+            return self._json(bridge.cancel())
+
         # ---- 会话：新对话 / 续聊 ----
         # 续聊前先确认 id 真在库里（拿着只读视图查），再让 bridge 切换 sessionId；
         # 这样即使前端传个瞎编的 id，也不会悄悄把后续消息写进一个幽灵会话。

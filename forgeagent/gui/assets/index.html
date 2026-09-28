@@ -197,6 +197,8 @@
     font-size: 13px; padding: 8px 18px;
   }
   #send:disabled { background: #c4c8ce; border-color: #c4c8ce; cursor: not-allowed; }
+  #stop { font-size: 13px; padding: 8px 14px; }
+  #stop:disabled { color: #c4c8ce; border-color: #dfe1e5; cursor: not-allowed; }
   .hint { font-size: 11px; color: var(--text-dim); padding: 0 16px 8px; background: var(--bg-soft); }
 
   #log-pane {
@@ -309,6 +311,7 @@
     <div id="composer">
       <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
       <button id="send">发送</button>
+      <button id="stop" disabled title="停止当前生成（中断后仍保留已生成的部分）">停止</button>
     </div>
     <div class="hint">Ctrl/Cmd + L 看日志　·　Ctrl/Cmd + Enter 发送　·　点左侧会话可续聊</div>
 
@@ -367,6 +370,7 @@
   var messages = document.getElementById("messages");
   var input = document.getElementById("input");
   var sendBtn = document.getElementById("send");
+  var stopBtn = document.getElementById("stop");
   var dot = document.getElementById("dot");
   var statusText = document.getElementById("status-text");
   var logPane = document.getElementById("log-pane");
@@ -500,6 +504,8 @@
   function setBusy(v) {
     busy = v;
     document.body.classList.toggle("busy", v);
+    // 停止按钮跟忙碌状态严格互补：空闲点不了，忙时就是那根"急刹闸"
+    stopBtn.disabled = !v;
   }
 
   // ---- 自报状态 ----
@@ -1109,9 +1115,25 @@
         current.dataset.raw = current.dataset.raw; // 保持不变
         current = null;
       }
+      if (ev.stop === "cancelled") {
+        // 内核在工具边界收尾时，来不及完成的调用不会再有 ToolCallDone；
+        // 卡片不能永远"运行中"。中断轮里所有还在跑的卡片一并收成「已取消」
+        // —— 用户主动的选择，跟红色"失败"不是一回事（虚线灰边）。
+        for (var tid in toolCards) {
+          var tc = toolCards[tid];
+          if (tc.classList.contains("running")) {
+            tc._st.textContent = TOOL_STATUS_LABEL.cancelled || "已取消";
+            tc.classList.remove("running");
+            tc.classList.add("cancelled");
+          }
+        }
+      }
       setBusy(false);
       sendBtn.disabled = false;
-      setStatus("ready", ev.error ? "出错了（看日志）" : ("stop=" + (ev.stop || "?")));
+      setStatus(
+        "ready",
+        ev.error ? "出错了（看日志）" : (ev.stop === "cancelled" ? "已停止生成" : "stop=" + (ev.stop || "?"))
+      );
       input.focus();
       report();
       loadSessions();  // 本轮落库了，侧栏里这个新会话该出现了
@@ -1182,6 +1204,15 @@
     }
   });
   sendBtn.addEventListener("click", submit);
+
+  stopBtn.addEventListener("click", function () {
+    if (!busy || !started) return;
+    stopBtn.disabled = true;  // 防连点；本轮 done 到了会由 setBusy 重新交还
+    api("/api/cancel", { method: "POST", body: {} }).catch(function () {
+      // 发送失败也得能继续等：agentd 若真的没停下，done 事件自己会来收场
+      stopBtn.disabled = false;
+    });
+  });
 
   // ---- 日志面板 ----
 

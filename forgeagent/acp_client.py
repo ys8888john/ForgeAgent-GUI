@@ -369,10 +369,29 @@ class AcpClient:
                 task.cancel()
 
     async def cancel(self) -> None:
-        """通知 agentd 中断当前轮次（通知，不期待响应）。"""
+        """通知 agentd 中断当前轮次。
+
+        **必须是通知**（无 id、不等响应）：协议上 session/cancel 就是单向帧，
+        agentd 的传输层 handler 与正在跑的 prompt 并发执行、不回任何帧。
+        若用 _call 发成请求，agentd 只会按"没有这个请求方法"回 -32601 ——
+        点"停止"变报错。中断在 agentd 侧发生：下一个 chunk/工具边界收尾，
+        本轮 prompt 以 stopReason="cancelled" 正常返回。
+        """
         if not self.session_id or self._proc is None:
             return
-        await self._call(M_CANCEL, {"sessionId": self.session_id})
+        await self._notify(M_CANCEL, {"sessionId": self.session_id})
+
+    async def _notify(self, method: str, params: dict) -> None:
+        """发一帧 JSON-RPC **通知**：没有 id，不等响应，也不占请求编号。
+
+        与 _call 的差别全在协议语义：通知是"发了就算"，对方不回帧 ——
+        所以这里没有任何 Future 可等，写完 + drain 立即返回。
+        """
+        if self._proc is None or self._proc.stdin is None:
+            raise AcpError("agent 进程尚未启动")
+        frame = json.dumps({"jsonrpc": "2.0", "method": method, "params": params})
+        self._proc.stdin.write(frame.encode("utf-8") + b"\n")
+        await self._proc.stdin.drain()
 
     # ---- 审批 ----
 

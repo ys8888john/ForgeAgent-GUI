@@ -511,7 +511,13 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
 
 - **MCP 工具 + 原生工具都可用**（见上面的「MCP（工具调用）」与「原生工具与审批」）：
   agentd 用 `agent` 模式跑工具循环、GUI 渲染工具卡片并**弹审批框**。
-  **没做**的是：diff 视图、工具调用的中途取消（`session/cancel` 目前只是通知）。
+  **中途停止已可用**：生成中输入框旁会出现「停止」按钮（POST `/api/cancel`
+  → `session/cancel` **通知**），agentd 在下一个 chunk/工具边界收尾，
+  `stop_reason="cancelled"`，运行中的工具卡片收成「已取消」，已流出的文本
+  照常保留在会话里。注意 GUI 的 `cancel()` 必须走通知（无 id、不等响应）——
+  若按请求发，agentd 会回 -32601，"停止"变成报错。
+  **没做**的是：diff 视图。正在执行的子进程命令不受通知影响，靠
+  `AGENTD_TOOLS_TIMEOUT` 超时兜底。
 - **工具卡片是本轮内的临时状态**，不进历史。刷新/续聊只重放落库的 user/assistant
   文本，工具卡片不会重现（内核只把最终回复落库，不存中间的 tool 往返）。
 - HTML 前端里的 Markdown 是**自带的极简实现**（标题、粗斜体、列表、行内代码、围栏代码块），
