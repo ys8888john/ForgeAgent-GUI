@@ -544,7 +544,14 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   `POST /api/session/new`、`POST /api/session/hide`、`POST /api/mode`。
 - **会话模式切换**：顶栏模式下拉（agent ↔ single），经 `session/set_mode`
   生效（下一轮 prompt 起新语义，agentd 响应里声明的取值为准）。agentd 未
-  声明 modes（旧版本）时下拉框自动隐藏。
+  声明 modes（旧版本）时下拉框自动隐藏。agentd 切换后会广播
+  `current_mode_update`，状态栏随之同步。
+- **MCP 管理弹窗**：顶栏「MCP」按钮直接打开 `mcp.json` 原文编辑
+  （对齐 Claude Desktop 的"打开配置文件"体验，不把各家 server 的私有字段
+  压进表单）。保存时校验 JSON/顶层形状，写回后自动重启 agentd（会话与
+  历史保留），新声明下一轮会话生效 —— 与模型切换同一条 restart 链路。
+- **用户消息"装回"**：user 气泡 hover 有「装回」，把内容放回输入框
+  编辑后自己发送 —— 不做自动重发，避免历史里出现两条同样的用户消息。
 - **消息气泡"复制"按钮**：hover 气泡右上角，复制的是渲染前的原文。
 - **Electron 壳记住窗口状态**：尺寸/位置存 userData/window-state.json
   （防抖保存、重启恢复），第二块屏拔掉等越界场景自动回退到默认位置。

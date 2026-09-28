@@ -396,3 +396,38 @@ def test_session_hide_round_trip():
     finally:
         srv.stop()
 
+
+def test_mcp_raw_round_trip(tmp_path, monkeypatch):
+    """MCP 原文读写：GET 拿原文 → POST 合法 mcp.json → 落盘 + bridge 重启生效。"""
+    import urllib.error
+
+    cfg = tmp_path / "mcp.json"
+    monkeypatch.setenv("FORGEAGENT_MCP_CONFIG", str(cfg))
+    srv = _server_with(_FakeSessions())
+    try:
+        # 初始：文件不存在 → 空文本
+        assert srv.client().get("/api/mcp/raw")["text"] == ""
+
+        body = {
+            "text": json.dumps(
+                {
+                    "mcpServers": {
+                        "echo": {"command": "python", "args": ["echo.py"], "env": {}}
+                    }
+                }
+            )
+        }
+        res = srv.client().post("/api/mcp/raw", body)
+        assert res["ok"] is True and res["count"] == 1
+        assert json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["echo"]["command"] == "python"
+        # owner 的内存副本同步更新（/api/mcp 摘要说有 1 个）
+        assert srv.mcp_servers[0]["name"] == "echo"
+
+        # 非法 JSON：400，文件不动
+        bad = {"text": "{ 不是 json"}
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            srv.client().post("/api/mcp/raw", bad)
+        assert exc.value.code == 400
+    finally:
+        srv.stop()
+

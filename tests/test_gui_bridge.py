@@ -50,6 +50,7 @@ class _FakeClient:
         self.cancel_calls = 0
         self.load_calls: list[str] = []
         self.set_mode_calls: list[str] = []
+        self.set_mcp_calls: list[list[dict]] = []
         # 会话模式声明（None = 模拟旧 agentd，没声明 modes）
         self.modes = modes
 
@@ -75,6 +76,9 @@ class _FakeClient:
     async def set_session_mode(self, mode_id: str) -> str:
         self.set_mode_calls.append(mode_id)
         return mode_id
+
+    def set_mcp_servers(self, servers):
+        self.set_mcp_calls.append(list(servers))
 
     async def new_session(self) -> str:
         # 给 Bridge.new_session 用的假实现：记下一个新 id 即可
@@ -685,3 +689,18 @@ def test_close_is_idempotent():
     bridge = Bridge(client=_FakeClient())
     bridge.close()
     bridge.close()  # 关两次不能抛（窗口关闭事件可能重复触发）
+
+
+def test_restart_applies_new_mcp_servers_and_keeps_session():
+    """restart 换 MCP 声明：set_mcp_servers 要被调用，会话 id 被带回。"""
+    fake = _FakeClient()
+    bridge = Bridge(client=fake)
+    try:
+        bridge.start()
+        bridge.next_events(timeout=0.3)  # 清掉 start 事件，别污染断言
+        out = bridge.restart(mcp_servers=[{"name": "echo", "command": "x"}])
+        assert out["ok"] is True
+        assert fake.set_mcp_calls == [[{"name": "echo", "command": "x"}]]
+        assert fake.session_id == "sess_test123456"
+    finally:
+        bridge.close()

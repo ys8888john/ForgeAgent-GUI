@@ -270,11 +270,15 @@
     font-size: 12px; padding: 3px 6px; max-width: 220px;
     border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
   }
-  #models-pane {
+  #models-pane, #mcp-pane {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35);
     z-index: 60; align-items: center; justify-content: center;
   }
-  #models-pane.open { display: flex; }
+  #models-pane.open, #mcp-pane.open { display: flex; }
+  .m-textarea {
+    width: 100%; font-family: var(--mono); font-size: 12px; line-height: 1.5;
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px; resize: vertical;
+  }
   .m-box {
     width: min(560px, calc(100vw - 48px)); max-height: 80vh; overflow: auto;
     background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
@@ -325,6 +329,7 @@
       <select id="model-select" title="切换模型（切换会重启 agentd，当前会话保留）"></select>
       <span class="spacer"></span>
       <select id="mode-select" title="会话模式（下一轮起生效）" style="display:none"></select>
+      <button id="mcp-btn" title="编辑 mcp.json（保存并重启 agentd 生效）">MCP</button>
       <button id="models-btn">模型管理</button>
       <button id="log-btn">agent 日志</button>
     </header>
@@ -341,6 +346,18 @@
     <div id="log-pane">
       <div class="bar"><button id="log-close">关闭</button></div>
       <div id="log-body"></div>
+    </div>
+
+    <div id="mcp-pane">
+      <div class="m-box">
+        <div class="m-title">MCP 配置（mcp.json）</div>
+        <div class="m-note" id="mcp-banner">保存后 agentd 会重启（会话与历史保留），新配置下一轮生效。</div>
+        <textarea id="mcp-text" class="m-textarea" rows="14" spellcheck="false"></textarea>
+        <div class="m-actions">
+          <button id="mcp-save">保存并重启 agentd</button>
+          <button id="mcp-close">取消</button>
+        </div>
+      </div>
     </div>
 
     <div id="models-pane">
@@ -655,6 +672,27 @@
     });
     el.appendChild(btn);
     el._copyBtn = btn;
+  }
+
+  // 用户气泡的「装回」按钮：把这条输入装回输入框让用户改完自己发送 ——
+  // 不做"自动重发"（那会凭空多一轮对话，历史也会出现两条同文本的用户消息）。
+  function attachResend(el) {
+    if (el._resend) return;
+    var btn = document.createElement("button");
+    btn.className = "copy-btn";
+    btn.type = "button";
+    btn.style.right = "44px";
+    btn.textContent = "装回";
+    btn.title = "把这条内容装回输入框（编辑后自己发送）";
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (busy) return;
+      input.value = el.dataset.raw || "";
+      autoSize();
+      input.focus();
+    });
+    el.appendChild(btn);
+    el._resend = btn;
   }
 
   // 模式切换器：agentd 在 new/load 响应里声明可用模式（availableModes），
@@ -1220,6 +1258,43 @@
   }
 
   document.getElementById("new-chat").addEventListener("click", newChat);
+
+  // ---- MCP 管理弹窗（mcp.json 原文编辑；保存后重启 agentd）----
+  var mcpPane = document.getElementById("mcp-pane");
+  var mcpText = document.getElementById("mcp-text");
+  document.getElementById("mcp-btn").addEventListener("click", async function () {
+    try {
+      var res = await api("/api/mcp/raw");
+      mcpText.value = res.text || "";
+      document.getElementById("mcp-banner").textContent =
+        "文件：" + (res.path || "") + " · 保存后 agentd 重启（会话与历史保留）";
+      mcpPane.classList.add("open");
+    } catch (e) {
+      showErrorBubble("读取失败", String((e && e.message) || e));
+    }
+  });
+  document.getElementById("mcp-close").addEventListener("click", function () {
+    mcpPane.classList.remove("open");
+  });
+  document.getElementById("mcp-save").addEventListener("click", async function () {
+    var btn = document.getElementById("mcp-save");
+    btn.disabled = true;
+    try {
+      var res = await api("/api/mcp/raw", { method: "POST", body: { text: mcpText.value } });
+      if (res.ok) {
+        mcpPane.classList.remove("open");
+        setStatus("ready", "MCP 已保存（" + res.count + " 个 server），agentd 已重启");
+        loadMcp();   // 侧栏脚注的 server 摘要立即刷新
+      } else {
+        var detail = res.detail && res.detail.error ? res.detail.error : "未知错误";
+        showErrorBubble("保存失败", detail);
+      }
+    } catch (e) {
+      showErrorBubble("保存失败", String((e && e.message) || e));
+    } finally {
+      btn.disabled = false;
+    }
+  });
   modeSel.addEventListener("change", function () {
     modeSel.disabled = true;
     api("/api/mode", { method: "POST", body: { mode_id: modeSel.value } })
@@ -1261,6 +1336,7 @@
       var b = newBubble("user");
       b.textContent = ev.text;
       attachCopy(b);
+      attachResend(b);
       if (autoScroll) scrollToBottom();
       toolCards = {};  // 新一轮，卡片表清空（id 理论上不冲突，防御性重置）
       setBusy(true);
@@ -1384,6 +1460,7 @@
     if (e.key === "Escape") {
       // 审批弹窗优先：Esc 关掉它 = 拒绝（agent 会换条路，不是"卡住"）
       if (permCurrent) { e.preventDefault(); answerPermission(""); return; }
+      if (mcpPane.classList.contains("open")) { mcpPane.classList.remove("open"); return; }
       if (logPane.classList.contains("show")) toggleLog();
     }
   });

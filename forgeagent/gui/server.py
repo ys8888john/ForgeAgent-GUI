@@ -303,6 +303,33 @@ class _Handler(BaseHTTPRequestHandler):
         # profile = 一组注入 agentd 子进程的 AGENTD_* 环境变量（存
         # ~/.forgeagent/models.json）。切换 = 用新 env 重启 agentd 子进程，
         # 会话 id 保住（历史在 SQLite，跨进程可续）。
+        # ---- MCP 配置原文保存（管理弹窗）----
+        # 校验到"能安全写回"即可：字段级校验是 agentd 的 MCP SDK 的职责，
+        # 这里只保证能解析、顶层形状对 —— README 有"字段缺失被静默清空"的坑。
+        if u.path == "/api/mcp/raw":
+            text = body.get("text")
+            if not isinstance(text, str):
+                return self._fail(400, "text 必须是字符串")
+            try:
+                data = json.loads(text)
+            except ValueError as exc:
+                return self._fail(400, f"JSON 解析失败：{exc}")
+            if not isinstance(data, dict):
+                return self._fail(400, "顶层必须是 JSON 对象")
+            if "mcpServers" in data and not isinstance(data["mcpServers"], dict):
+                return self._fail(400, "mcpServers 必须是对象")
+            p = config_path()
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+            except OSError as exc:
+                return self._fail(500, f"写 {p} 失败：{exc}")
+            # 生效走同一套 restart：mcpServers 属于 session/new，新进程才用新声明
+            servers = load_mcp_servers(p)
+            self._owner.mcp_servers = servers
+            restarted = bridge.restart(mcp_servers=servers)
+            return self._json({"ok": restarted.get("ok", False), "count": len(servers), "detail": restarted})
+
         if u.path == "/api/models":
             data = body.get("data") if isinstance(body.get("data"), dict) else {}
             profiles = [sanitize_profile(p) for p in data.get("profiles") or [] if isinstance(p, dict)]
@@ -344,6 +371,17 @@ class _Handler(BaseHTTPRequestHandler):
                     "servers": [s.get("name") for s in servers],
                 }
             )
+
+        if path == "/api/mcp/raw":
+            # 给「MCP 管理」弹窗用的原文视图：mcp.json 里有很多我们不拥有的
+            # 字段（不同 server 各有各的参数），表单化反而丢信息 —— 直接暴露
+            # 原始 JSON，编辑体验对齐 Claude Desktop 的"打开配置文件"。
+            p = config_path()
+            try:
+                raw = p.read_text(encoding="utf-8") if p.is_file() else ""
+            except OSError:
+                raw = ""
+            return self._json({"ok": True, "path": str(p), "text": raw})
 
         # ---- 自定义模型 profile ----
         # GET  /api/models           列表（env 里的 key 原样给，value 脱敏显示）

@@ -435,6 +435,14 @@ class AcpClient:
         self._proc.stdin.write(frame.encode("utf-8") + b"\n")
         await self._proc.stdin.drain()
 
+    def set_mcp_servers(self, servers: list[dict] | None) -> None:
+        """替换下一次 start/new_session 要声明的 MCP server 列表。
+
+        与 set_env 同语义（配置热更新的一部分）：改完要配 restart 才生效 ——
+        mcpServers 是 session/new 请求的一部分，已建会话不会平白换工具。
+        """
+        self._mcp_servers = list(servers or [])
+
     # ---- 审批 ----
 
     async def answer_permission(self, request_id: int, option_id: str) -> bool:

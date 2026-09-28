@@ -178,12 +178,13 @@ class Bridge:
         )
         return {"ok": True, "session": session_id, "loaded": loaded}
 
-    def restart(self, env: dict[str, str] | None = None) -> dict:
-        """换环境变量重启 agentd 子进程（切换模型用），尽量保住当前会话 id。
+    def restart(self, env: dict[str, str] | None = None, mcp_servers: list[dict] | None = None) -> dict:
+        """换配置重启 agentd 子进程（模型 / MCP 声明变化），尽量保住当前会话 id。
 
         流程：关旧进程 → 给 client 换 env → 重新 start（握手 + 新 session）→
         如果之前有会话 id，把 client.session_id 切回去（agentd 从 SQLite 载入
-        历史，模型换了上下文还在）。
+        历史，模型换了上下文还在）。mcp_servers 同理：它是 session/new 请求的
+        一部分，改动必须重启才会对后续会话生效。
 
         失败处理：不抛异常。返回 {"ok": False, "error": ...}，界面照常显示；
         旧 client 已经关了，用户重试即可（Bridge 层面没死锁风险）。
@@ -206,6 +207,9 @@ class Bridge:
             set_env(dict(env) if env else None)
         else:  # 旧/精简版 client：直接换字段（合并语义在 client 里）
             self._client._env = dict(env) if env else None
+        set_mcp = getattr(self._client, "set_mcp_servers", None)
+        if callable(set_mcp) and mcp_servers is not None:
+            set_mcp(mcp_servers)
 
         self._emit(type="status", state="connecting", message="正在切换模型…")
         try:
