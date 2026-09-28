@@ -133,6 +133,7 @@ python3 -m venv .venv
 | `AGENTD_TOOLS_APPROVE` | 透传给 agentd：审批策略 `native` / `all` / `none` | `native` |
 | `FORGEAGENT_MCP_CONFIG` | MCP 配置文件位置 | `~/.forgeagent/mcp.json` |
 | `FORGEAGENT_GUI_MODE` | 前端载体：`electron` / `serve` | `electron` |
+| `FORGEAGENT_ADDITIONAL_DIRS` | 额外工作区目录（os.pathsep 分隔，发给 agentd 的 additionalDirectories；工具可用绝对路径访问） | 空 |
 | `FORGEAGENT_PYTHON` | electron 模式下拉起 Python 后端的解释器（由 `forgeagent-gui` 自动设为 `sys.executable`）| 系统 `python3` |
 | `FORGEAGENT_UI_DEBUG` | 设为 1 时把本机服务的每个请求打到 stderr | 关 |
 

@@ -448,3 +448,28 @@ async def test_plain_notification_still_goes_to_queue():
         assert msg["method"] == "session/update"
     finally:
         task.cancel()
+
+
+# ---- 额外工作区（additionalDirectories）----
+
+def test_parse_additional_dirs_handles_missing_and_relative(monkeypatch):
+    from forgeagent.acp_client import _parse_additional_dirs
+    import os
+    from pathlib import Path
+
+    assert _parse_additional_dirs(None) == []
+    assert _parse_additional_dirs("") == []
+    monkeypatch.setenv("FORGEAGENT_ADDITIONAL_DIRS", f"/abs/a{os.pathsep}relative{os.pathsep}~/docs")
+    out = _parse_additional_dirs(os.environ["FORGEAGENT_ADDITIONAL_DIRS"])
+    assert out[0] == "/abs/a"
+    assert out[1] == str(Path("~/docs").expanduser())
+
+
+def test_client_reads_additional_dirs_from_env(monkeypatch):
+    monkeypatch.setenv("FORGEAGENT_ADDITIONAL_DIRS", "/tmp/x:/tmp/y")
+    client = AcpClient()
+    assert client.additional_directories == ["/tmp/x", "/tmp/y"]
+
+
+def test_client_additional_dirs_default_empty():
+    assert AcpClient().additional_directories == []

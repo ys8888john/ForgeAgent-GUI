@@ -35,6 +35,7 @@ import shlex
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 try:  # 可选依赖：只用来取方法名常量
@@ -46,6 +47,25 @@ except Exception:  # 没装 SDK 也能跑
 
 
 DEFAULT_TIMEOUT = 300.0  # 一轮生成可能很长，给足
+
+
+def _parse_additional_dirs(raw: str | None) -> list[str]:
+    """解析 FORGEAGENT_ADDITIONAL_DIRS → 绝对路径列表（os.pathsep 分隔）。
+
+    每段 expanduser 且必须是绝对路径；空段/相对段忽略（相对路径对 agentd
+    子进程语义模糊，宁可不给也别给错）。
+    """
+    if not raw:
+        return []
+    out = []
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if not part:
+            continue
+        p = Path(part).expanduser()
+        if p.is_absolute():
+            out.append(str(p))
+    return out
 STDERR_LIMIT = 500  # 环形缓冲上限，防止长时间跑把内存吃满
 PERMISSION_TIMEOUT = 300.0  # 审批等这么久还没人答就按拒绝回帧（见 PermissionRequest）
 
@@ -227,6 +247,12 @@ class AcpClient:
         self._timeout = timeout
         # 本会话要接入的 MCP server（ACP 格式），session/new 时带过去
         self._mcp_servers = list(mcp_servers or [])
+        # 额外工作区（additionalDirectories）：从环境变量解析成绝对路径列表。
+        # 是 client 级配置（启动时解析一次），随 session/new 与 session/load
+        # 一起发给 agentd，内核把它并进原生工具的越界白名单。
+        self.additional_directories = _parse_additional_dirs(
+            os.environ.get("FORGEAGENT_ADDITIONAL_DIRS")
+        )
 
         self._proc: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
@@ -297,7 +323,10 @@ class AcpClient:
         stale = await self.cancel_pending_permissions()
         if stale:
             self._log(f"[审批] 切会话，作废 {stale} 个未决审批")
-        resp = await self._call(M_NEW, {"cwd": self._cwd, "mcpServers": self._mcp_servers})
+        new_payload: dict = {"cwd": self._cwd, "mcpServers": self._mcp_servers}
+        if self.additional_directories:
+            new_payload["additionalDirectories"] = self.additional_directories
+        resp = await self._call(M_NEW, new_payload)
         self.session_id = resp["result"]["sessionId"]
         # agentd 会在 new/load 响应里声明 session modes（id + 人话名/描述）
         self.modes = resp["result"].get("modes")
@@ -317,6 +346,7 @@ class AcpClient:
                 "sessionId": session_id,
                 "cwd": self._cwd,
                 "mcpServers": self._mcp_servers,
+                "additionalDirectories": self.additional_directories,
             },
         )
         # LoadSessionResponse 不带 sessionId（协议就这么定义），成功即生效
