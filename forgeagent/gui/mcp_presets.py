@@ -104,6 +104,14 @@ PRESETS: dict[str, Preset] = {
         summary="跨对话记忆：存/搜/列/删笔记（自研 bundled，零依赖）",
         bundled_script="examples/memory_mcp_server.py",
     ),
+    "sqlite": Preset(
+        name="sqlite",
+        package="",  # bundled：不需要安装任何包（stdlib sqlite3）
+        module="",
+        summary="SQLite 数据库：列表/看结构/只读查询（写需服务端 --allow-write 且走审批）",
+        bundled_script="examples/sqlite_mcp_server.py",
+        probe_tool="list_tables",
+    ),
 }
 """预设表。key 是命令行里用的短名（`--servers time,fetch`）。"""
 

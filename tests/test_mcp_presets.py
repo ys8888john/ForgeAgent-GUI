@@ -273,3 +273,13 @@ def test_memory_preset_is_bundled_and_points_at_repo_script():
 
     config = merge_config({"mcpServers": {"echo": {"command": "x", "args": [], "env": []}}}, {"memory": entry})
     assert set(config["mcpServers"]) == {"echo", "memory"}  # 合并不覆盖别人
+
+
+def test_sqlite_preset_is_bundled_and_declares_probe():
+    preset = PRESETS["sqlite"]
+    assert preset.bundled_script is not None
+    assert (mcp_presets.repo_root() / preset.bundled_script).is_file()
+    assert preset.probe_tool == "list_tables"
+
+    entry = server_entry(preset, Path(sys.executable).parent.parent)
+    assert entry["args"] == [str(mcp_presets.repo_root() / "examples/sqlite_mcp_server.py")]

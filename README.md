@@ -249,9 +249,14 @@ python scripts/verify_local_mcp.py                      # 验证：真连一遍�
 **GUI 里也有入口**：「MCP」弹窗顶部有「常用工具」chips —— 点一下即把该预设
 写进 mcp.json 并重启 agentd（会话与历史保留）。服务端规则：
 
-- **memory（自研 bundled，零依赖）**：随仓库分发 `examples/memory_mcp_server.py`，
-  工具 `save_note / search_notes / list_notes / delete_note`，存储
-  `~/.forgeagent/memory.json`。不装包、离线可用，是唯一"点了就能用"的预设。
+- **memory / sqlite（自研 bundled，零依赖）**：随仓库分发
+  `examples/memory_mcp_server.py`（工具 save/search/list/delete，存储
+  `~/.forgeagent/memory.json`）与 `examples/sqlite_mcp_server.py`
+  （工具 list_tables / describe_table / run_query / run_statement，默认库
+  `~/.forgeagent/sqlite.db`，编辑 mcp.json 的 args `--file` 指向任意库）。
+  不装包、离线可用，是"点了就能用"的两条预设。
+  **sqlite 的安全模型**：默认只读（`mode=ro` 连接 + 只收 SELECT），传
+  `--allow-write` 才能写；写工具不带只读声明，会走过 agentd 审批弹窗。
   全链路（McpHub 真连真调、含持久化重开）在 `tests/test_memory_mcp_server.py`。
 - **time / fetch / git（pip 型）**：这三条**不装包**，只在你已经用
   `scripts/install_local_mcp.py --install --write` 把包装进专用 venv 后才会写入；
@@ -263,7 +268,8 @@ python scripts/verify_local_mcp.py                      # 验证：真连一遍�
 | `time` | `mcp-server-time` | 时间/时区换算、时间加减 | |
 | `fetch` | `mcp-server-fetch` | 抓取网页并转成 markdown | |
 | `git` | `mcp-server-git` | git status / log / diff / show | 需要 PATH 上有 git（见下） |
-| `memory` | **无（bundled）** | 跨对话记忆：存/搜/列/删笔记 | 自研、随仓库分发、零依赖 |
+| `memory` | **无（bundled）** | 跨对话记忆：存/搜/列/删笔记 | 自研、随仓库分发、零依赖 | 
+| `sqlite` | **无（bundled）** | SQLite 只读查询（写需 --allow-write + 审批） | 自研、随仓库分发、零依赖 | 
 
 生成的 `mcp.json` 长这样（`command` 是**专用 venv 的解释器绝对路径**，不是 `python`）：
 
