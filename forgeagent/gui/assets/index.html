@@ -70,12 +70,20 @@
 
   #sidebar {
     flex: 0 0 264px; width: 264px;
-    border-right: 1px solid var(--border);
     background: var(--bg-soft);
     display: flex; flex-direction: column; min-height: 0;
   }
   /* 生成中时整个侧栏不可点，防止"切到一半又发消息"把历史写乱 */
   body.busy #sidebar { pointer-events: none; opacity: .6; }
+  /* 侧栏与主区之间的可拖拽分隔条：宽度本身不占视觉，靠 border-right 画那条线；
+     悬停/拖拽时整条高亮成 accent，给足"可以拖"的暗示（对标 VS Code 的 sash）。 */
+  #sidebar-resizer {
+    flex: 0 0 5px; width: 5px; cursor: col-resize;
+    border-right: 1px solid var(--border);
+    background: transparent;
+    transition: background .12s ease;
+  }
+  #sidebar-resizer:hover, #sidebar-resizer.dragging { background: var(--accent); }
   #sidebar-head {
     display: flex; align-items: center; justify-content: space-between;
     padding: 10px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
@@ -518,6 +526,8 @@
     <div id="session-list"></div>
     <div id="sidebar-foot">ForgeAgent · 本地运行</div>
   </aside>
+
+  <div id="sidebar-resizer" title="拖动调整侧栏宽度"></div>
 
   <main id="main">
     <header>
@@ -2080,6 +2090,52 @@
     if (busy || !started) return;
     openSpaceNew();
   });
+
+  // ---- 侧栏可拖拽分隔条：用鼠标左右拽，改变侧栏宽度 ----
+  // 侧栏是 #app 的第一个 flex 子项，左边缘贴着 #app 左边，所以宽度就按
+  // (鼠标 X - #app 左边缘) 算，不用管它本身有没有 margin/padding。
+  // 宽度夹在 180~720px：太窄列表会挤爆，太宽就抢了聊天区。
+  // 落 localStorage，刷新后保持用户上次的宽度。
+  (function () {
+    var app = document.getElementById("app");
+    var sidebar = document.getElementById("sidebar");
+    var handle = document.getElementById("sidebar-resizer");
+    var KEY = "forgeagent.sidebar.width";
+    var MIN = 180, MAX = 720;
+    try {
+      var saved = parseInt(localStorage.getItem(KEY), 10);
+      if (saved >= MIN && saved <= MAX) {
+        sidebar.style.flexBasis = saved + "px";
+        sidebar.style.width = saved + "px";
+      }
+    } catch (e) {}
+    var dragging = false;
+    function clamp(w) { return Math.max(MIN, Math.min(MAX, w)); }
+    handle.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      dragging = true;
+      handle.classList.add("dragging");
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    });
+    window.addEventListener("mousemove", function (e) {
+      if (!dragging) return;
+      var rect = app.getBoundingClientRect();
+      var w = clamp(e.clientX - rect.left);
+      sidebar.style.flexBasis = w + "px";
+      sidebar.style.width = w + "px";
+    });
+    window.addEventListener("mouseup", function () {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove("dragging");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      try {
+        localStorage.setItem(KEY, String(Math.round(sidebar.getBoundingClientRect().width)));
+      } catch (e) {}
+    });
+  })();
 
   // ---- MCP 管理弹窗（mcp.json 原文编辑；保存后重启 agentd）----
   var mcpPane = document.getElementById("mcp-pane");
