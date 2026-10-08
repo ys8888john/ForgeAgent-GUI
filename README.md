@@ -579,7 +579,7 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   后端接口：`GET /api/sessions`、`GET /api/session/<id>`、`POST /api/session/resume`、
   `POST /api/session/new`、`POST /api/session/hide`、`POST /api/session/rename`、
   `POST /api/mode`。
-  **会话重命名**：条目 hover 有 ✎，写本地别名（`session_aliases.json`），
+  **会话重命名**：右键会话条目 →「重命名…」，写本地别名（`session_aliases.json`），
   列表标题别名优先；留空提交即恢复自动标题。
 - **会话模式切换**：顶栏模式下拉（agent ↔ single），经 `session/set_mode`
   生效（下一轮 prompt 起新语义，agentd 响应里声明的取值为准）。agentd 未

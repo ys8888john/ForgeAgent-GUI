@@ -95,10 +95,6 @@
     text-align: left; width: 100%; background: transparent;
     border: 1px solid transparent; border-radius: 8px; padding: 8px 10px;
     cursor: pointer; display: flex; flex-direction: column; gap: 3px;
-    /* position:relative —— 必须的。.si-del / .si-ren 是 position:absolute，
-       没有这个定位上下文它们会去找更外层的祖先（#sidebar 或 body），
-       结果按钮飞到侧栏顶部/视口角上，hover 时根本看不到自己那一行的按钮。 */
-    position: relative;
   }
   .session-item:hover { background: #eceef1; }
   .session-item.active { background: #e8f0fe; border-color: var(--user-border); }
@@ -158,25 +154,11 @@
   }
   .bubble:hover .copy-btn { display: inline-block; }
   .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
-  /* 会话行内的重命名 / 删除按钮：常驻但很淡，hover 才醒目。
-     之前是 display:none + :hover 才显示 —— 加上 position 缺失的 bug，
-     实际根本看不到，等于功能不存在。淡显比隐藏更可发现。 */
-  .session-item .si-del,
-  .session-item .si-ren {
-    position: absolute; top: 7px; display: inline-block;
-    border: none; background: none; color: var(--text-dim);
-    cursor: pointer; font-size: 13px; line-height: 1;
-    padding: 2px 4px; border-radius: 4px; opacity: 0.35;
-    transition: opacity 0.12s, background 0.12s;
-  }
-  .session-item .si-ren { right: 26px; }
-  .session-item .si-del { right: 6px; }
-  .session-item:hover .si-del,
-  .session-item:hover .si-ren { opacity: 1; background: rgba(0, 0, 0, 0.06); }
-  .session-item .si-del:hover { color: #d2504a; }
-  .session-item .si-ren:hover { color: var(--accent); }
-  // 标题给右侧两个按钮让位，不然长标题会钻到按钮底下
-  .session-item .si-title { padding-right: 42px; }
+  /* 会话行不再挂 hover 图标（原本是绝对定位的重命名 ✎ / 从列表删除 ×）。
+     那两个图标常驻在每行右上角，视觉上比会话标题还抢眼，而它们对应的动作
+     右键菜单里本来就有 —— 去图标不丢功能。会话行的动作统一走右键菜单。
+     下面 .session-item 的 position:relative 也一并撤了：它当初只为给这两个
+     绝对定位按钮当定位上下文。 */
   .bubble.user {
     align-self: flex-end; background: var(--user-bg);
     border: 1px solid var(--user-border); border-bottom-right-radius: 4px;
@@ -1261,8 +1243,7 @@
   // ---- 会话行的两个动作：重命名 / 从列表删除 ----
   // 后端早就有了（POST /api/session/rename、/api/session/hide，落在
   // ~/.agentd/session_aliases.json 和 hidden_sessions.json，库本身不动）。
-  // 之前只有行内的 ✎ / × 且藏得几乎看不见，等于没有入口；现在行内按钮和
-  // 右键菜单共用这两个函数。
+  // 入口只有会话行的右键菜单一个 —— 行内按钮已撤掉（视觉噪音大于收益）。
   function renameSession(s, newTitle) {
     return api("/api/session/rename", {
       method: "POST",
@@ -1337,32 +1318,15 @@
       prev.textContent = s.preview || "";
 
       b.appendChild(title); b.appendChild(meta); b.appendChild(prev);
-      var del = document.createElement("button");
-      del.className = "si-del";
-      del.type = "button";
-      del.textContent = "×";
-      del.title = "从列表中删除（会话记录仍完整保留在数据库）";
-      del.addEventListener("click", function (e) {
-        e.stopPropagation();
-        hideSession(s);
-      });
-      b.appendChild(del);
-      var ren = document.createElement("button");
-      ren.className = "si-ren";
-      ren.type = "button";
-      ren.textContent = "✎";
-      ren.title = "重命名该对话";
-      ren.addEventListener("click", function (e) {
-        e.stopPropagation();
-        openCtxMenu(s, ren.getBoundingClientRect());
-      });
-      b.appendChild(ren);
-      // 右键：以前完全没有 contextmenu 监听，右击什么都不会发生。
+      // 重命名 / 从列表删除不在这里挂图标按钮 —— 会话行的动作统一走右键菜单
+      // （见下面的 contextmenu 监听）。原先每行右上角常驻 ✎ 和 ×，视觉上比
+      // 会话标题还抢眼，而它们触发的是同一个菜单，纯属重复入口。
       b.addEventListener("contextmenu", function (e) {
         e.preventDefault();
         e.stopPropagation();
         openCtxMenu(s, { left: e.clientX, top: e.clientY });
-      });      b.addEventListener("click", function () { resumeSession(s.id); });
+      });
+      b.addEventListener("click", function () { resumeSession(s.id); });
       box.appendChild(b);
     });
   }
@@ -1834,7 +1798,8 @@
     ctxTarget = null;
   }
 
-  // anchor 可以是 {left, top}（右键点）或一个 DOMRect（点 ✎ 按钮）。
+  // anchor 是 {left, top}（右键点击处）。保留 anchor 参数是因为菜单还要按视口
+  // 边界夹取，将来若要恢复按钮入口，传 DOMRect 即可复用。
   function openCtxMenu(s, anchor) {
     ctxTarget = s;
     document.getElementById("ctx-head").textContent =
@@ -1844,17 +1809,10 @@
     ctxMenu.classList.add("open");
     // 先显示再量，否则 offsetWidth/Height 是 0。定位完再夹进视口。
     var w = ctxMenu.offsetWidth, h = ctxMenu.offsetHeight;
-    var left, top;
-    if (anchor.right != null) {
-      // 从 ✎ 按钮弹：贴着按钮左侧展开，别盖住自己刚点的那个按钮
-      left = anchor.left - w + 4;
-      top = anchor.top - 4;
-    } else {
-      // 右键：落在光标处，但整体下移一点，别压住这一行的标题
-      // （菜单 head 里已经重复了一次标题，压住就是白遮）。
-      left = anchor.left;
-      top = anchor.top + 6;
-    }
+    // 菜单统一从右键点击处展开，整体下移一点，别压住这一行的标题
+    //（菜单 head 里已经重复了一次标题，压住就是白遮）。
+    var left = anchor.left;
+    var top = anchor.top + 6;
     var vw = window.innerWidth, vh = window.innerHeight;
     if (left + w > vw - 8) left = vw - w - 8;
     if (top + h > vh - 8) top = vh - h - 8;
