@@ -541,16 +541,58 @@
     font-size: 11px; line-height: 1.6; margin-top: 8px; color: var(--text-dim);
     border-top: 1px dashed var(--border); padding-top: 8px;
   }
-  #m-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-  .m-item {
+  /* 模型配置列表是**二级树**：一级 = 一个 provider（profile），二级 = 它名下的模型。
+     一级行点空白处折叠/展开（编辑/删除按钮 stopPropagation）；
+     二级行点一下就把该 provider 热切到那个模型。 */
+  #m-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+  .mp-group { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .mp-group.active { border-color: var(--user-border); }
+  .mp-head {
     display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-    border: 1px solid var(--border); border-radius: 8px;
+    cursor: pointer; background: var(--bg);
   }
-  .m-item.active { background: #e8f0fe; border-color: var(--user-border); }
-  .m-item .mi-name { font-size: 13px; font-weight: 600; flex: 1; min-width: 0;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .m-item .mi-backend { font-size: 11px; color: var(--text-dim); }
-  .m-item button { font-size: 11px; padding: 3px 8px; }
+  .mp-group.active .mp-head { background: #e8f0fe; }
+  .mp-caret {
+    flex: 0 0 auto; width: 10px; font-size: 10px; color: var(--text-dim);
+    transition: transform .15s ease;
+  }
+  /* 折叠时箭头由 ▾ 转成 ▸（rotate -90°） */
+  .mp-group.collapsed .mp-caret { transform: rotate(-90deg); }
+  .mp-name {
+    font-size: 13px; font-weight: 600; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* 「使用中」徽标：一级行标当前激活的 provider */
+  .mp-badge {
+    flex: 0 0 auto; font-size: 10px; line-height: 1.7; padding: 0 6px;
+    border-radius: 999px; color: var(--ok); background: var(--ok-bg);
+    border: 1px solid var(--ok-border);
+  }
+  .mi-backend { flex: 0 0 auto; font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
+  .mp-spacer { flex: 1 1 auto; }
+  .mp-head button { flex: 0 0 auto; font-size: 11px; padding: 3px 8px; }
+  /* 二级：模型行缩进挂在 provider 下面 */
+  .mp-models { display: flex; flex-direction: column; }
+  .mp-group.collapsed .mp-models { display: none; }
+  .mp-model {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 28px;
+    font-size: 12px; cursor: pointer; border-top: 1px solid var(--border);
+  }
+  .mp-model:hover { background: var(--bg-soft); }
+  .mp-model .mp-dot {
+    flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--border);
+  }
+  .mp-model.active .mp-dot { background: var(--ok); }
+  .mp-model .mp-mname {
+    flex: 1 1 auto; min-width: 0; font-family: var(--mono);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .mp-model.active .mp-mname { font-weight: 600; }
+  .mp-model.active { cursor: default; }   /* 已是当前模型，点了也没动作 */
+  .mp-model .mp-use { flex: 0 0 auto; font-size: 10px; color: var(--ok); }
+  /* provider 一个模型都没填时的占位行（不可点） */
+  .mp-model.none { cursor: default; color: var(--text-dim); }
+  .mp-model.none:hover { background: transparent; }
   .m-edit {
     display: none; border-top: 1px dashed var(--border); padding-top: 12px; margin-bottom: 12px;
   }
@@ -1593,6 +1635,9 @@
   var mEdit = document.getElementById("m-edit");
   var mList = document.getElementById("m-list");
   var editingId = null;   // 正在编辑的 profile id（null = 新增）
+  // 二级列表里每个 provider 的折叠状态 {profileId: true}。renderModelList 是整块
+  // 重建 DOM 的，状态不记在内存里的话，每刷一次列表箭头就全弹回展开。
+  var collapsedProviders = {};
 
   function backendKeyPrefix(backend) {
     if (backend === "mimo") return "AGENTD_MIMO_";
@@ -1776,36 +1821,137 @@
       });
   }
 
+  // 这个 provider 名下的模型列表：显式 models 优先（多模型），否则回落到 env 里的那一个。
+  function profileModels(p) {
+    var env = p.env || {};
+    var prefix = backendKeyPrefix(env["AGENTD_LLM_BACKEND"]);
+    if (p.models && p.models.length) return p.models.slice();
+    var one = env[prefix + "MODEL"] || env["AGENTD_OLLAMA_MODEL"] || "";
+    return one ? [one] : [];
+  }
+
+  // 该 provider 当前生效的模型（env 里那个 MODEL，切模型后由后端落回 models.json）。
+  function currentModelOf(p) {
+    var env = p.env || {};
+    var prefix = backendKeyPrefix(env["AGENTD_LLM_BACKEND"]);
+    return env[prefix + "MODEL"] || env["AGENTD_OLLAMA_MODEL"] || "";
+  }
+
+  // 一级行的显示名：配置名常被手工写成「智谱 GLM（glm-4.5-air）」—— 老的一级列表
+  // 只显示名字，所以模型名被塞进了括号。现在模型单独列在二级，一级行就把尾部那个
+  // 和某个模型同名的括号去掉（半角 () 与全角（）都认），避免重复。括号里不是模型名
+  // 时原样保留；完整原名不丢，挂在 title 上。
+  function providerLabel(p, models) {
+    var full = String(p.name || "");
+    var m = full.match(/^(.*?)\s*[（(]\s*([^（）()]*?)\s*[)）]\s*$/);
+    if (m && m[1].trim() && models.indexOf(m[2]) >= 0) return { text: m[1].trim(), full: full };
+    return { text: full, full: full };
+  }
+
   function renderModelList() {
     api("/api/models").then(function (res) {
       mList.innerHTML = "";
       var active = res.active;
-      (res.profiles || []).forEach(function (p) {
-        var item = document.createElement("div");
-        item.className = "m-item" + (p.id === active ? " active" : "");
-        var name = document.createElement("span");
-        name.className = "mi-name";
-        name.textContent = p.name;
-        var backend = document.createElement("span");
-        backend.className = "mi-backend";
-        backend.textContent = (p.env && p.env["AGENTD_LLM_BACKEND"]) || "";
-        var editBtn = document.createElement("button");
-        editBtn.textContent = "编辑";
-        editBtn.addEventListener("click", function () { editModel(p); });
-        var delBtn = document.createElement("button");
-        delBtn.textContent = "删除";
-        delBtn.addEventListener("click", function () { deleteModel(p.id); });
-        item.appendChild(name); item.appendChild(backend);
-        item.appendChild(editBtn); item.appendChild(delBtn);
-        mList.appendChild(item);
+      var profiles = res.profiles || [];
+      profiles.forEach(function (p) {
+        mList.appendChild(buildProviderGroup(p, active));
       });
-      if (!(res.profiles || []).length) {
+      if (!profiles.length) {
         var empty = document.createElement("div");
         empty.className = "si-empty";
         empty.textContent = "还没有配置。点「+ 新增」建一个（比如智谱 / MiMo / Ollama）。";
         mList.appendChild(empty);
       }
     }).catch(function () {});
+  }
+
+  // 一级：provider 行；二级：它名下的模型行。点一级行空白处折叠，点二级行热切换。
+  function buildProviderGroup(p, active) {
+    var isActive = p.id === active;
+    var models = profileModels(p);
+    var cur = currentModelOf(p);
+
+    var group = document.createElement("div");
+    group.className = "mp-group" + (isActive ? " active" : "");
+    if (collapsedProviders[p.id]) group.classList.add("collapsed");
+
+    // ---- 一级行 ----
+    var head = document.createElement("div");
+    head.className = "mp-head";
+    var caret = document.createElement("span");
+    caret.className = "mp-caret"; caret.textContent = "▾";
+    var lbl = providerLabel(p, models);
+    var name = document.createElement("span");
+    name.className = "mp-name"; name.textContent = lbl.text;
+    if (lbl.full && lbl.full !== lbl.text) name.title = lbl.full;
+    head.appendChild(caret); head.appendChild(name);
+    if (isActive) {
+      var badge = document.createElement("span");
+      badge.className = "mp-badge"; badge.textContent = "使用中";
+      head.appendChild(badge);
+    }
+    var backend = document.createElement("span");
+    backend.className = "mi-backend";
+    backend.textContent = (p.env && p.env["AGENTD_LLM_BACKEND"]) || "";
+    head.appendChild(backend);
+    var spacer = document.createElement("span");
+    spacer.className = "mp-spacer";
+    head.appendChild(spacer);
+    var editBtn = document.createElement("button");
+    editBtn.textContent = "编辑";
+    editBtn.addEventListener("click", function (e) { e.stopPropagation(); editModel(p); });
+    var delBtn = document.createElement("button");
+    delBtn.textContent = "删除";
+    delBtn.addEventListener("click", function (e) { e.stopPropagation(); deleteModel(p.id); });
+    head.appendChild(editBtn); head.appendChild(delBtn);
+    head.addEventListener("click", function () {
+      collapsedProviders[p.id] = !collapsedProviders[p.id];
+      group.classList.toggle("collapsed", !!collapsedProviders[p.id]);
+    });
+    group.appendChild(head);
+
+    // ---- 二级行：模型 ----
+    var body = document.createElement("div");
+    body.className = "mp-models";
+    if (!models.length) {
+      var none = document.createElement("div");
+      none.className = "mp-model none";
+      none.textContent = "（未填模型名）";
+      body.appendChild(none);
+    }
+    models.forEach(function (m) {
+      var isCur = isActive && m === cur;
+      var row = document.createElement("div");
+      row.className = "mp-model" + (isCur ? " active" : "");
+      var dot = document.createElement("span");
+      dot.className = "mp-dot";
+      var mname = document.createElement("span");
+      mname.className = "mp-mname"; mname.textContent = m;
+      row.appendChild(dot); row.appendChild(mname);
+      if (isCur) {
+        var use = document.createElement("span");
+        use.className = "mp-use"; use.textContent = "使用中";
+        row.appendChild(use);
+      } else {
+        row.title = "点一下切到这个模型（热切换，不重启 agentd）";
+        row.addEventListener("click", function () { switchProfileModel(p, m); });
+      }
+      body.appendChild(row);
+    });
+    group.appendChild(body);
+    return group;
+  }
+
+  // 点二级模型行 -> 把该 provider 热切到这个模型（走和 header 下拉同一条 /api/model/select）。
+  function switchProfileModel(p, model) {
+    if (!window.confirm("把「" + p.name + "」切到模型 " + model + "？下一轮对话即用，不重启 agentd。")) return;
+    api("/api/model/select", { method: "POST", body: { id: p.id, model: model } })
+      .then(function (r) {
+        if (!r.ok) { showErrorBubble("切换失败", r.error || "未知错误"); return; }
+        loadModels();       // header 下拉读的是 models.json 的 env MODEL，跟着刷新
+        renderModelList();  // 二级列表的「使用中」高亮也跟着挪
+      })
+      .catch(function (e) { showErrorBubble("切换失败", String(e)); });
   }
 
   function editModel(p) {

@@ -859,6 +859,16 @@ class _Handler(BaseHTTPRequestHandler):
             data = load_models()
             if pid and not any(p.get("id") == pid for p in data["profiles"]):
                 return self._fail(404, f"没有这个模型配置: {pid}")
+            # 同一 provider 下切具体模型时，把选择也落回 models.json。否则它只活在热
+            # 文件里：前端刷新（读 models.json）会把「当前模型」显示回该 profile 的默认
+            # 模型，而且重启 GUI 时启动逻辑会拿默认模型覆盖热文件，选择直接丢掉。
+            if pid and model:
+                for _p in data["profiles"]:
+                    if _p.get("id") == pid:
+                        _env = dict(_p.get("env") or {})
+                        _env[_backend_prefix(_env.get("AGENTD_LLM_BACKEND")) + "MODEL"] = model
+                        _p["env"] = _env
+                        break
             save_models({**data, "active": pid or None})
 
             # 热切换：把选中的 env 写进热配置文件，agentd 下一轮即用，不重启。

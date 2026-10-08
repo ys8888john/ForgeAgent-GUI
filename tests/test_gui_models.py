@@ -181,7 +181,12 @@ def test_select_hot_swaps_without_restart(server):
 
 
 def test_select_switches_model_within_profile(server):
-    """同一 provider 下填了多个模型：切到其中一个，只改 MODEL 写进热文件。"""
+    """同一 provider 下填了多个模型：切到其中一个，MODEL 同时写进热文件与 models.json。
+
+    落回 models.json 是为了让「当前模型」可被读取侧看到：前端刷新（读 models.json）
+    要拿它高亮，重启 GUI 时启动逻辑也从这里取 —— 只写热文件的话，刷新会显示回默认
+    模型、重启还会被默认模型覆盖。
+    """
     c = _client(server)
     c.post("/api/models", {"data": {"active": None, "profiles": [
         {"id": "z1", "name": "智谱", "models": ["glm-4.5-air", "glm-4.6"],
@@ -194,6 +199,25 @@ def test_select_switches_model_within_profile(server):
     data = json.loads(M.hotenv_path().read_text(encoding="utf-8"))
     assert data["AGENTD_ZHIPU_MODEL"] == "glm-4.6"
     assert data["AGENTD_ZHIPU_API_KEY"] == "sk-x"   # 其余字段沿用
+    # 选择同时落了盘：别的字段与多模型清单都不受影响
+    p = M.load_models()["profiles"][0]
+    assert p["env"]["AGENTD_ZHIPU_MODEL"] == "glm-4.6"
+    assert p["env"]["AGENTD_ZHIPU_API_KEY"] == "sk-x"
+    assert p["models"] == ["glm-4.5-air", "glm-4.6"]
+
+
+def test_selected_model_shows_up_in_listing(server):
+    """切完模型后 GET /api/models 要反映新的当前模型 —— 前端二级列表高亮、header
+    下拉回填都读它，读不到就会「切了却还显示默认模型」。"""
+    c = _client(server)
+    c.post("/api/models", {"data": {"active": "z1", "profiles": [
+        {"id": "z1", "name": "智谱", "models": ["glm-4.5-air", "glm-4.6"],
+         "env": {"AGENTD_LLM_BACKEND": "zhipu", "AGENTD_ZHIPU_MODEL": "glm-4.5-air"}},
+    ]}})
+    c.post("/api/model/select", {"id": "z1", "model": "glm-4.6"})
+    p = c.get("/api/models")["profiles"][0]
+    assert p["env"]["AGENTD_ZHIPU_MODEL"] == "glm-4.6"
+    assert p["models"] == ["glm-4.5-air", "glm-4.6"]
 
 
 def test_select_unknown_profile_404(server):
