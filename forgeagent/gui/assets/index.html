@@ -1866,7 +1866,8 @@
         // 刷新下拉框让它反映「当前选中的模型」，否则下拉框还停在上一个选项。
         loadModels();
         showToast("已切换到 " + (labelText || model || "默认配置"),
-                  "对话中途更改模型可能降低性能，并可能增加积分消耗。");
+                  "对话中途更改模型可能降低性能，并可能增加积分消耗。",
+                  { silentInWelcome: true });
       })
       .catch(function (e) { showErrorBubble("切换失败", String(e)); loadModels(); })
       .finally(function () { input.focus(); });
@@ -2094,7 +2095,8 @@
         if (!r.ok) { showErrorBubble("切换失败", r.error || "未知错误"); return; }
         loadModels();       // header 下拉读的是 models.json 的 env MODEL，跟着刷新
         renderModelList();  // 二级列表的「使用中」高亮也跟着挪
-        showToast("已切换到 " + model, "对话中途更改模型可能降低性能，并可能增加积分消耗。");
+        showToast("已切换到 " + model, "对话中途更改模型可能降低性能，并可能增加积分消耗。",
+                  { silentInWelcome: true });
       })
       .catch(function (e) { showErrorBubble("切换失败", String(e)); });
   }
@@ -2422,7 +2424,16 @@
   // 用于「切模型成功」这类只需告知、不需用户拍板的反馈：不抢焦点、不阻塞输入，
   // 几秒后自动消失，点一下可立即关掉。比 window.confirm 更适合热切换 ——
   // 原生框会抢走输入框焦点（切完"打不了字"就是这么来的），还得让用户多点一次"确定"。
-  function showToast(title, detail) {
+  //
+  // `silentInWelcome`：欢迎页（空会话）上切换不该弹提示。那里的底栏模型名、header
+  // 下拉本身就已经是"切换成功"的即时视觉反馈，再盖一层 toast 反而是噪音 ——
+  // 而且这次切换多半发生在"开聊之前"，压根谈不上"对话中途更改模型"。
+  // 之所以做成参数而不是在调用处 if 一下：这条路有两个入口（header 下拉的
+  // change、欢迎页底栏菜单回填后派发的 change），判断只应该有一份。
+  function showToast(title, detail, opts) {
+    if (opts && opts.silentInWelcome && document.body.classList.contains("empty-session")) {
+      return null;
+    }
     var host = document.getElementById("toast-host");
     if (!host) return null;
     var t = document.createElement("div");
@@ -2867,7 +2878,8 @@
   // 之前欢迎页的模型名只是**只读指示**（点不动），唯一能切模型的地方是顶部那条
   // header 下拉 —— 用户会以为底栏这里能切（目录 chip 就能点），结果是"切换模型
   // 没反应"。这里补上：菜单列出的就是 header 下拉里的同一个模型集合，点了走
-  // 同一条 /api/model/select，并复用 change 处理里那套确认 + toast + 刷新。
+  // 同一条 /api/model/select，并复用 change 处理里那套刷新逻辑。
+  // 提示是静默的（silentInWelcome）：欢迎页上底栏名字自己就变了，不必再弹 toast。
   var wmModelMenu = document.getElementById("wm-model-menu");
   var wmmList = document.getElementById("wmm-list");
 
@@ -2922,7 +2934,7 @@
           if (busy || !started) return;
           closeWmModelMenu();
           // 直接复刻 header 下拉 change 的处理：把 value 写回下拉再派发 change，
-          // 这样确认框 / toast / loadModels 刷新只有一份实现，不会两条路径走偏。
+          // 这样「提交切换 + 刷新下拉 + 提示策略」只有一份实现，不会两条路径走偏。
           modelSelect.value = opt.value;
           modelSelect.dispatchEvent(new Event("change"));
         });
