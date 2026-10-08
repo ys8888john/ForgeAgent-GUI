@@ -31,7 +31,7 @@ class Bridge:
     事件都是普通 dict（直接 JSON 序列化给 JS），类型有：
         status     连接状态变化
         user       用户发出的消息（回声，让界面立刻有反馈）
-        delta      流式增量，role ∈ assistant / thought / error
+        delta      流式增量，role ∈ assistant / thought / error / notice
         tool       工具调用状态变化（含 id/title/kind/status/output）
         permission agent 请求审批（带 id/tool/detail/options），界面必须回
         done       本轮结束，带 stop reason 和 error
@@ -411,7 +411,7 @@ class Bridge:
 
         只发新增的部分而不是每次发全量 —— 否则长回答的传输量是 O(n²)。
         """
-        last = {"assistant": 0, "thought": 0, "error": 0}
+        last = {"assistant": 0, "thought": 0, "error": 0, "notice": 0}
         seen_tools: dict[str, tuple[str, str]] = {}
         turn: Turn | None = None
         try:
@@ -421,6 +421,7 @@ class Bridge:
                     ("assistant", t.text),
                     ("thought", t.thought),
                     ("error", t.error),
+                    ("notice", t.notice),
                 ):
                     if len(value) > last[role]:
                         self._emit(type="delta", role=role, text=value[last[role]:])

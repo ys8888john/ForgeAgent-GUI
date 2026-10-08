@@ -15,9 +15,20 @@
 //   所以这里不需要任何 node <-> 页面的桥。
 
 const { app, BrowserWindow } = require("electron");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+
+// 远程调试端口：设 FORGEAGENT_CDP_PORT=9333 就能用 CDP 驱动这个窗口
+// （Runtime.evaluate 查计算样式、触事件、截图）。排查"按钮点不到/位置乱飞"
+// 这类只能靠真实渲染确认的问题时非常有用 —— 静态读代码看不出来。
+// 必须在 app ready 之前 appendSwitch，晚了不起作用；不设就不开，不影响正常运行。
+if (process.env.FORGEAGENT_CDP_PORT) {
+  app.commandLine.appendSwitch(
+    "remote-debugging-port",
+    String(parseInt(process.env.FORGEAGENT_CDP_PORT, 10) || 9333)
+  );
+}
 
 // electron/ 的父目录就是项目根（forgeagent 包在这里，cwd 设到这才能让 `python -m forgeagent.gui` 导入到包）
 const PROJECT_ROOT = path.resolve(__dirname, "..");
@@ -150,13 +161,31 @@ function showError(msg) {
 }
 
 function cleanup() {
-  if (pyProc) {
+  if (!pyProc) return;
+  const pid = pyProc.pid;
+  pyProc = null;
+  if (!pid) return;
+  if (process.platform === "win32") {
+    // Windows 上 kill("SIGTERM") 走 TerminateProcess，只杀 pyProc 自己，
+    // 它的子孙（agentd worker、以及 server.py 里那个保活 WSL 的
+    // `wsl -e sleep infinity`）会活下来 —— 后者尤其麻烦：它一旦活着，
+    // WSL 发行区就永远不会被空闲回收，内存和显存一直占着。/T 连树一起杀。
     try {
-      pyProc.kill("SIGTERM");
+      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    } catch (_) {
+      try {
+        process.kill(pid);
+      } catch (_) {
+        /* 已退出 */
+      }
+    }
+  } else {
+    // POSIX：subprocess 默认可被信号打断，kill 进程组即可带走子孙
+    try {
+      process.kill(pid, "SIGTERM");
     } catch (_) {
       /* 已退出 */
     }
-    pyProc = null;
   }
 }
 

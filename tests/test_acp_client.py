@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from forgeagent.acp_client import ERROR_MARK, AcpClient, Turn, _collect_text
+from forgeagent.acp_client import ERROR_MARK, NOTICE_MARK, AcpClient, Turn, _collect_text
 
 
 def _notify(kind: str, text: str) -> dict:
@@ -219,6 +219,37 @@ def test_split_error_chunks_all_go_to_error():
     client._apply_update(turn, _notify("agent_thought_chunk", ERROR_MARK + " Ollama HTTP 404："))
     client._apply_update(turn, _notify("agent_thought_chunk", "model not found"))
     assert turn.error == "Ollama HTTP 404：model not found"
+    assert turn.thought == ""
+
+
+# ---- 系统提示识别 ----
+#
+# ACP 同样没有"系统提示"通道，agentd 的 Notice 事件（上下文裁剪提示之类）
+# 也借 thought 通道下发 + 打 [提示] 前缀。逻辑与错误同路，只是落点不同：
+# 错误是故障要红色，提示是说明要淡灰，两者都不能混进模型的思考文本。
+
+def test_notice_marker_is_split_out_of_thought():
+    client, turn = AcpClient(), Turn()
+    client._apply_update(turn, _notify("agent_thought_chunk", NOTICE_MARK + " 上下文超出预算"))
+    assert turn.notice == "上下文超出预算"
+    assert turn.thought == ""
+
+
+def test_notice_is_not_confused_with_error():
+    """[提示] 和 [错误] 共用一条通道，认错会把系统说明显示成红色故障。"""
+    client, turn = AcpClient(), Turn()
+    client._apply_update(turn, _notify("agent_thought_chunk", NOTICE_MARK + " 已省略 3 条"))
+    assert turn.error == ""
+    client._apply_update(turn, _notify("agent_thought_chunk", ERROR_MARK + " 真的炸了"))
+    assert turn.notice == "已省略 3 条"
+    assert turn.error == "真的炸了"
+
+
+def test_split_notice_chunks_all_go_to_notice():
+    client, turn = AcpClient(), Turn()
+    client._apply_update(turn, _notify("agent_thought_chunk", NOTICE_MARK + " 上下文超出预算，"))
+    client._apply_update(turn, _notify("agent_thought_chunk", "省略了较早的 3 条消息"))
+    assert turn.notice == "上下文超出预算，省略了较早的 3 条消息"
     assert turn.thought == ""
 
 
@@ -453,22 +484,38 @@ async def test_plain_notification_still_goes_to_queue():
 # ---- 额外工作区（additionalDirectories）----
 
 def test_parse_additional_dirs_handles_missing_and_relative(monkeypatch):
+    """缺值/空串 → []；绝对路径留下、相对路径忽略、~ 展开。
+
+    别硬编码 POSIX 路径（"/abs/a"）：Windows 上 Path("/abs/a") 会被解析成
+    当前盘符下的 "\\abs\\a"，str() 出来分隔符变了，断言必挂。所以按平台
+    挑一个本机真实存在的绝对路径来喂，"相对段被丢弃"这条另外单独测。
+    """
     from forgeagent.acp_client import _parse_additional_dirs
     import os
     from pathlib import Path
 
     assert _parse_additional_dirs(None) == []
     assert _parse_additional_dirs("") == []
-    monkeypatch.setenv("FORGEAGENT_ADDITIONAL_DIRS", f"/abs/a{os.pathsep}relative{os.pathsep}~/docs")
+
+    abs_dir = str(Path("C:\\Windows").resolve()) if os.name == "nt" else "/usr"
+    monkeypatch.setenv(
+        "FORGEAGENT_ADDITIONAL_DIRS",
+        abs_dir + os.pathsep + "relative" + os.pathsep + "~/docs",
+    )
     out = _parse_additional_dirs(os.environ["FORGEAGENT_ADDITIONAL_DIRS"])
-    assert out[0] == "/abs/a"
-    assert out[1] == str(Path("~/docs").expanduser())
+    # "relative" 是非绝对路径，实现明确要求丢弃，所以只剩两条
+    assert out == [abs_dir, str(Path("~/docs").expanduser())]
 
 
 def test_client_reads_additional_dirs_from_env(monkeypatch):
-    monkeypatch.setenv("FORGEAGENT_ADDITIONAL_DIRS", "/tmp/x:/tmp/y")
+    import os
+    from pathlib import Path
+    # 分隔符同样要平台化，不能写死 ":"（Windows 是 ";"）
+    d1 = str(Path("C:\\Windows").resolve()) if os.name == "nt" else "/tmp/x"
+    d2 = str(Path("C:\\Users").resolve()) if os.name == "nt" else "/tmp/y"
+    monkeypatch.setenv("FORGEAGENT_ADDITIONAL_DIRS", d1 + os.pathsep + d2)
     client = AcpClient()
-    assert client.additional_directories == ["/tmp/x", "/tmp/y"]
+    assert client.additional_directories == [d1, d2]
 
 
 def test_client_additional_dirs_default_empty():

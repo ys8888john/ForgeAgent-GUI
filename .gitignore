@@ -11,3 +11,10 @@ venv/
 # Node / Electron（electron/ 是自带 Chromium 的壳，node_modules 与打包产物不进库）
 node_modules/
 electron/dist/
+
+# 运行日志：本机跑 --mode serve 或 electron 时落下的（.serve.log /
+# electron-launch.log）。进来纯属噪音，还会把绝对路径和端口带进历史。
+*.log
+
+# WorkBuddy 工作区记忆（本机会话的工作笔记，不进远端）
+.workbuddy/

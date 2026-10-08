@@ -85,6 +85,61 @@ def test_broken_payload_degrades_to_empty_card_not_crash(tmp_path):
     assert hist[0]["content"] == "read_file"
 
 
+def test_get_history_skips_model_only_rows(tmp_path):
+    """工具往返里那两行是给模型的，不是给 UI 的。
+
+    现在一次工具调用会落四种行（顺序）：
+
+        user → assistant(带 tool_calls) → tool_record（卡片）→ tool（输出）→ assistant（结论）
+
+    其中「assistant 举手」和「role=tool」存在的唯一理由是跨轮上下文 —— 让模型
+    下一轮还能看到自己读过什么。UI 回放必须把它们跳掉：省略的那份工具输出正是
+    隔壁那张卡片的 output，画出来就是同一份内容显示两遍。
+    """
+    db = tmp_path / "sessions.db"
+    announce = json.dumps(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "name": "read_file", "arguments": "{}"}],
+        }
+    )
+    result = json.dumps(
+        {"role": "tool", "content": "[1] 你好", "tool_call_id": "c1", "name": "read_file"}
+    )
+    _seed(
+        db,
+        [
+            ("user", "帮我读文件", json.dumps({"role": "user", "content": "帮我读文件"})),
+            ("assistant", "", announce),
+            (
+                "tool_record",
+                "read_file",
+                json.dumps(
+                    {
+                        "role": "tool_record",
+                        "content": "read_file",
+                        "tool_record": {
+                            "call_id": "c1",
+                            "title": "read_file",
+                            "kind": "read",
+                            "status": "completed",
+                            "output": "[1] 你好",
+                        },
+                    }
+                ),
+            ),
+            ("tool", "[1] 你好", result),
+            ("assistant", "读到了", json.dumps({"role": "assistant", "content": "读到了"})),
+        ],
+    )
+
+    hist = SessionsSource(db).get_history("s1")
+    # 同一件事只留一次：卡片代表动作，assistant 结论代表回答
+    assert [m["role"] for m in hist] == ["user", "tool_record", "assistant"]
+    assert hist[-1]["content"] == "读到了"
+
+
 def test_missing_empty_session_returns_none(tmp_path):
     db = tmp_path / "sessions.db"
     conn = sqlite3.connect(db)

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -453,7 +454,11 @@ def test_mcp_presets_endpoint_and_bundled_add(tmp_path, monkeypatch):
         assert res["ok"] is True and res["count"] == 1
         saved = json.loads(cfg.read_text(encoding="utf-8"))
         args = saved["mcpServers"]["memory"]["args"]
-        assert len(args) == 1 and args[0].endswith("examples/memory_mcp_server.py")
+        # 路径断言要跨平台兼容：Windows 上 str(Path) 出来是反斜杠，
+        # endswith("examples/memory_mcp_server.py") 这种写死斜杠的写法必然挂。
+        script = Path(args[0])
+        assert len(args) == 1 and script.name == "memory_mcp_server.py"
+        assert script.parent.name == "examples"
         # bundled 不假装能 pip：没有 package
         assert saved["mcpServers"]["memory"]["command"].endswith(("python", "python3", "bin/python")) or "python" in saved["mcpServers"]["memory"]["command"]
 

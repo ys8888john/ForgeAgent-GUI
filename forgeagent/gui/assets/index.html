@@ -18,6 +18,9 @@
     --danger-bg: #fef3f2;
     --code-bg: #f4f5f7;
     color-scheme: light;
+    --ok: #1a7f4b;
+    --ok-bg: #e6f5ec;
+    --ok-border: #b7e0c8;
     --hl-str: #0a7d33;
     --hl-com: #6b7280;
     --hl-kw: #b42318;
@@ -45,6 +48,9 @@
     --hl-com: #8b949e;
     --hl-kw: #ff7b72;
     --hl-num: #79b8ff;
+    --ok: #7fd6a5;
+    --ok-bg: #16301f;
+    --ok-border: #2c5c3e;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
@@ -89,6 +95,10 @@
     text-align: left; width: 100%; background: transparent;
     border: 1px solid transparent; border-radius: 8px; padding: 8px 10px;
     cursor: pointer; display: flex; flex-direction: column; gap: 3px;
+    /* position:relative —— 必须的。.si-del / .si-ren 是 position:absolute，
+       没有这个定位上下文它们会去找更外层的祖先（#sidebar 或 body），
+       结果按钮飞到侧栏顶部/视口角上，hover 时根本看不到自己那一行的按钮。 */
+    position: relative;
   }
   .session-item:hover { background: #eceef1; }
   .session-item.active { background: #e8f0fe; border-color: var(--user-border); }
@@ -135,7 +145,12 @@
     flex: 1 1 auto; overflow-y: auto;
     padding: 20px 16px; display: flex; flex-direction: column; gap: 14px;
   }
-  .bubble { position: relative; max-width: 82%; padding: 10px 14px; border-radius: 12px; white-space: normal; }
+  /* flex-shrink:0 —— 必须的。#messages 是 flex column + overflow-y:auto，
+     flex 项目在 overflow 非 visible 时 min-height:auto 会解析成 0，于是会被
+     flex-shrink 压扁。.bubble.thought 正好带 overflow:hidden，会话一长（总高
+     超过容器）它就被压成 2px，head 溢出后被裁掉 → 折叠态只剩一条线、还点不开。
+     气泡永远不该被压缩，压扁的应该是容器（它自己会滚动）。 */
+  .bubble { position: relative; max-width: 82%; padding: 10px 14px; border-radius: 12px; white-space: normal; flex-shrink: 0; }
   .copy-btn {
     position: absolute; top: 4px; right: 6px; display: none;
     font-size: 11px; color: var(--text-dim); background: var(--bg-soft);
@@ -143,17 +158,25 @@
   }
   .bubble:hover .copy-btn { display: inline-block; }
   .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
-  .session-item .si-del {
-    position: absolute; right: 8px; top: 8px; display: none;
-    border: none; background: none; color: var(--text-dim); cursor: pointer; font-size: 13px;
-  }
+  /* 会话行内的重命名 / 删除按钮：常驻但很淡，hover 才醒目。
+     之前是 display:none + :hover 才显示 —— 加上 position 缺失的 bug，
+     实际根本看不到，等于功能不存在。淡显比隐藏更可发现。 */
+  .session-item .si-del,
   .session-item .si-ren {
-    position: absolute; right: 26px; top: 8px; display: none;
-    border: none; background: none; color: var(--text-dim); cursor: pointer; font-size: 13px;
+    position: absolute; top: 7px; display: inline-block;
+    border: none; background: none; color: var(--text-dim);
+    cursor: pointer; font-size: 13px; line-height: 1;
+    padding: 2px 4px; border-radius: 4px; opacity: 0.35;
+    transition: opacity 0.12s, background 0.12s;
   }
-  .session-item:hover .si-del { display: inline-block; }
-  .session-item:hover .si-ren { display: inline-block; }
+  .session-item .si-ren { right: 26px; }
+  .session-item .si-del { right: 6px; }
+  .session-item:hover .si-del,
+  .session-item:hover .si-ren { opacity: 1; background: rgba(0, 0, 0, 0.06); }
   .session-item .si-del:hover { color: #d2504a; }
+  .session-item .si-ren:hover { color: var(--accent); }
+  // 标题给右侧两个按钮让位，不然长标题会钻到按钮底下
+  .session-item .si-title { padding-right: 42px; }
   .bubble.user {
     align-self: flex-end; background: var(--user-bg);
     border: 1px solid var(--user-border); border-bottom-right-radius: 4px;
@@ -162,13 +185,49 @@
     align-self: flex-start; background: var(--bg-soft);
     border: 1px solid var(--border); border-bottom-left-radius: 4px;
   }
+  /* Thinking 框：流式时展开着实时显示，思考结束自动折叠，点 header 随时展开。
+     padding 归 0，边框交给 header 和 body 自己贴边 —— 否则展开态内容会跟
+     header 之间多出一道空隙，看起来像两个框。 */
   .bubble.thought {
-    align-self: flex-start; background: transparent; border: 1px dashed var(--border);
-    color: var(--text-dim); font-size: 13px;
+    align-self: flex-start; width: fit-content; max-width: 82%;
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0; color: var(--text-dim); font-size: 13px;
+    overflow: hidden;
   }
+  .think-head {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    padding: 6px 10px; border: none; background: none; cursor: pointer;
+    font-family: inherit; font-size: 12px; color: var(--text-dim); text-align: left;
+  }
+  .think-head:hover { background: var(--code-bg); }
+  .think-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex: none;
+    background: var(--text-dim);
+  }
+  /* 进行中：蓝点脉冲 + 状态文案变蓝，一眼看出"还在想" */
+  .bubble.thought.streaming .think-dot {
+    background: var(--accent); animation: thinkPulse 1.2s ease-in-out infinite;
+  }
+  .bubble.thought.streaming .think-state { color: var(--accent); }
+  @keyframes thinkPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+  .think-label { font-weight: 600; color: var(--text); }
+  .think-state { color: var(--text-dim); }
+  .think-caret { margin-left: auto; font-size: 10px; transition: transform 0.15s; }
+  .bubble.thought.collapsed .think-caret { transform: rotate(-90deg); }
+  .think-body { padding: 4px 10px 8px; border-top: 1px solid var(--border); }
+  .bubble.thought.collapsed .think-body { display: none; }
   .bubble.error {
     align-self: flex-start; background: var(--danger-bg);
     border: 1px solid #fda29b; color: var(--danger);
+  }
+  /* 系统提示（上下文被裁剪了之类）：既不抢眼也不能消失。
+     用虚线边框 + 小字和错误红、思考灰区分开 —— 它是系统的行为陈述，
+     不是模型说的话，更不是故障。 */
+  .bubble.notice {
+    align-self: center; max-width: 92%;
+    padding: 6px 12px; border-radius: 8px;
+    background: var(--bg-soft); border: 1px dashed var(--border);
+    color: var(--text-dim); font-size: 12px; text-align: center;
   }
   .bubble .label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
 
@@ -267,7 +326,16 @@
     border: 1px solid var(--border); border-radius: 12px; cursor: pointer;
   }
   .m-chip:hover { border-color: var(--accent); color: var(--accent); }
-  .m-chip[disabled] { opacity: .5; cursor: default; color: var(--text-dim); }
+  /* 已添加的工具：不是按钮，是状态标签。
+     之前连它一起用 <button disabled> 渲染 —— 一片灰的圆角按钮，
+     看起来像"还没生效、还得再按一下"，而它其实已经生效、此刻就能被模型调用。
+     改成不带边框的绿色对勾标签，一眼区分"状态"和"可点的操作"。 */
+  .m-chip.in-config {
+    cursor: default; color: var(--ok); background: var(--ok-bg);
+    border-color: var(--ok-border); opacity: 1;
+  }
+  .m-chip.in-config::before { content: "✓ "; font-weight: 600; }
+  .m-chip.in-config:hover { border-color: var(--ok-border); color: var(--ok); }
   .hint { font-size: 11px; color: var(--text-dim); padding: 0 16px 8px; background: var(--bg-soft); }
 
   #log-pane {
@@ -333,6 +401,13 @@
   }
   .m-title { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
   .m-note { font-size: 11px; color: var(--text-dim); margin-bottom: 12px; line-height: 1.6; }
+  .m-note-sub { font-size: 11px; line-height: 1.6; margin-top: 4px; }
+  /* 确认框正文可能带 \n（说明文字分行写更清楚），默认 white-space 会把换行吃掉 */
+  #cf-detail { white-space: pre-line; }
+  .cf-restore-hint {
+    font-size: 11px; line-height: 1.6; margin-top: 8px; color: var(--text-dim);
+    border-top: 1px dashed var(--border); padding-top: 8px;
+  }
   #m-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
   .m-item {
     display: flex; align-items: center; gap: 8px; padding: 8px 10px;
@@ -354,6 +429,63 @@
   }
   .m-actions { display: flex; gap: 8px; }
   .m-foot { justify-content: space-between; margin-top: 4px; }
+  .m-probe-out { font-size: 11px; align-self: center; color: var(--text-dim); }
+  .m-probe-out.ok { color: var(--hl-str); }
+  /* 两个 token 上限并排：它们是一对（输入窗口 / 输出上限），拆两行会看着像两个无关配置项。
+     min-width:0 不能省 —— flex 项目默认 min-width:auto，长 placeholder 会把两格挤得
+     一边宽一边窄，甚至溢出容器。 */
+  .m-row-split { display: flex; gap: 8px; }
+  .m-row-split input { min-width: 0; flex: 1 1 0; }
+
+  /* ---- 会话右键菜单 ---- */
+  #ctx-menu {
+    position: fixed; z-index: 90; min-width: 168px; display: none;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 4px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, .18);
+  }
+  #ctx-menu.open { display: block; }
+  #ctx-menu .ctx-item {
+    display: block; width: 100%; text-align: left;
+    background: none; border: none; border-radius: 6px;
+    padding: 7px 10px; font-size: 13px; color: var(--text); cursor: pointer;
+  }
+  #ctx-menu .ctx-item:hover { background: #eceef1; }
+  #ctx-menu .ctx-item.danger { color: #d2504a; }
+  #ctx-menu .ctx-item.danger:hover { background: #fdecea; }
+  #ctx-menu .ctx-sep { height: 1px; background: var(--border); margin: 4px 6px; }
+  #ctx-menu .ctx-head {
+    padding: 6px 10px 4px; font-size: 11px; color: var(--text-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* 菜单内的重命名输入框：替掉 window.prompt —— 原生对话框会抢走焦点，
+     且和全局 keydown 抢按键（同一个坑：切模型时的 confirm）。
+     注意：容器用 class（.ctx-rename-box）而不是 id —— 输入框自己占了
+     #ctx-rename 这个 id，两者同名会让下面的 #ctx-rename 规则命中错元素，
+     结果输入框那一块永远 display:none（实测踩过）。 */
+  .ctx-rename-box {
+    display: none; padding: 4px; width: 100%;
+  }
+  #ctx-menu.renaming .ctx-rename-box { display: block; }
+  #ctx-menu.renaming .ctx-hide-when-edit { display: none; }
+  .ctx-rename-box input {
+    width: 100%; font-size: 13px; padding: 6px 8px;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+    color: var(--text);
+  }
+  .ctx-rename-box .ctx-rename-row { display: flex; gap: 6px; margin-top: 6px; }
+  .ctx-rename-box button { font-size: 12px; padding: 4px 10px; }
+
+  /* 通用确认框（替掉 window.confirm —— 原生对话框抢焦点，见 JS 注释） */
+  #confirm {
+    position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 95;
+    background: rgba(31, 33, 36, .38);
+    display: none; align-items: center; justify-content: center;
+  }
+  #confirm.show { display: flex; }
+  .cf-danger { color: var(--danger) !important; border-color: #fda29b !important; }
+  .cf-danger:hover { background: var(--danger-bg) !important; }
+  .m-probe-out.bad { color: var(--danger); }
 
 </style>
 </head>
@@ -373,7 +505,7 @@
     <header>
       <h1>ForgeAgent</h1>
       <span id="status"><span id="dot"></span><span id="status-text">启动中…</span></span>
-      <select id="model-select" title="切换模型（切换会重启 agentd，当前会话保留）"></select>
+      <select id="model-select" title="热切换模型（不重启 agentd，下一轮对话生效；当前会话保留）"></select>
       <span class="spacer"></span>
       <select id="mode-select" title="会话模式（下一轮起生效）" style="display:none"></select>
       <button id="mcp-btn" title="编辑 mcp.json（保存并重启 agentd 生效）">MCP</button>
@@ -400,7 +532,11 @@
       <div class="m-box">
         <div class="m-title">MCP 配置（mcp.json）</div>
         <div class="m-note" id="mcp-banner">保存后 agentd 会重启（会话与历史保留），新配置下一轮生效。</div>
-        <div class="m-note"><b>常用工具：</b><span id="mcp-presets">加载中…</span></div>
+        <div class="m-note">
+          <b>常用工具：</b><span id="mcp-presets">加载中…</span><br>
+          <span class="m-note-sub">打勾的 = 已写入 mcp.json 并被 agentd 加载，模型随时能调用，不需要再点任何东西。
+            没打勾的按钮点一下才会写入。</span>
+        </div>
         <textarea id="mcp-text" class="m-textarea" rows="14" spellcheck="false"></textarea>
         <div class="m-actions">
           <button id="mcp-save">保存并重启 agentd</button>
@@ -414,15 +550,28 @@
         <div class="m-title">模型配置</div>
         <div class="m-note">
           每个配置 = 一组注入 agentd 的环境变量（AGENTD_*），存于 ~/.forgeagent/models.json。
-          后端可选：ollama / openai_compat / mimo / zhipu。切换即重启 agentd 子进程，当前会话历史保留。
+          后端可选：ollama / openai_compat / mimo / zhipu。切换即<b>热切换</b>（不重启 agentd，
+          下一轮对话生效），当前会话历史保留。一个 provider 下可在「模型名」里用逗号填多个模型，会话内随时切换。
+        </div>
+        <div class="m-note">
+          下面的 token 上限是<b>每个配置单独一份</b>的：本机 qwen3.5 常见窗口 4k~40k，
+          云端 GLM / MiMo 是 128k —— 差三倍以上，做成全局一个值必然"一边严重浪费、
+          一边静默溢出"。<b>留空 = 不改</b>（保持该配置原来的值），<b>填 0 = 不限</b>。
         </div>
         <div id="m-list"></div>
         <div class="m-edit" id="m-edit">
           <div class="m-row"><input id="m-name" placeholder="显示名，如：智谱 GLM-4.5-air"></div>
           <div class="m-row"><input id="m-backend" placeholder="AGENTD_LLM_BACKEND，如 zhipu"></div>
-          <div class="m-row"><input id="m-model" placeholder="模型名，如 glm-4.5-air（对应 AGENTD_*_MODEL）"></div>
-          <div class="m-row"><input id="m-baseurl" placeholder="Base URL（可选，AGENTD_OPENAI/MIMO/ZHIPU_BASE_URL）"></div>
+          <div class="m-row"><input id="m-model" placeholder="模型名，多个用逗号分隔，如 glm-4.5-air, glm-4.6（一个 provider 下可填多个，会话内随时切换）"></div>
+          <div class="m-row"><input id="m-baseurl" placeholder="Base URL（可选；ollama 后端写入 AGENTD_OLLAMA_HOST，其余写入 *_BASE_URL）"></div>
           <div class="m-row"><input id="m-apikey" type="password" placeholder="API Key（可选；留空 = 不改已有的）"></div>
+          <div class="m-row m-row-split">
+            <input id="m-maxctx" inputmode="numeric" placeholder="上下文预算 token（0=不限，如 8192）"
+                   title="超预算时从最早的对话开始丢，并给会话发一行提示告诉我丢了几条；你的当前提问永远保留">
+            <input id="m-maxout" inputmode="numeric" placeholder="单次回答上限 token（0=不限，如 1024）"
+                   title="走 Ollama 时是 num_predict，走 OpenAI 兼容端点是 max_tokens">
+          </div>
+          <div class="m-row"><button id="m-probe">测试连接</button><span id="m-probe-out" class="m-probe-out"></span></div>
           <div class="m-actions">
             <button id="m-save">保存</button>
             <button id="m-cancel">取消</button>
@@ -450,6 +599,36 @@
       选择会原样送回 agentd；关掉弹窗（或按 Esc）等于拒绝，agent 会换条路走。
     </div>
   </div>
+</div>
+
+<div id="confirm">
+  <div class="m-box" style="width:min(420px,calc(100vw - 48px))">
+    <div class="m-title" id="cf-title"></div>
+    <div class="m-note" id="cf-detail"></div>
+    <div class="cf-restore-hint" id="cf-hint"></div>
+    <div class="m-actions m-foot">
+      <button id="cf-ok" type="button">确定</button>
+      <button id="cf-cancel" type="button">取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="ctx-menu">
+  <div class="ctx-head" id="ctx-head"></div>
+  <div class="ctx-rename-box">
+    <input id="ctx-rename-input" placeholder="会话名称（留空恢复自动标题）" maxlength="80">
+    <div class="ctx-rename-row">
+      <button id="ctx-rename-ok" type="button">保存</button>
+      <button id="ctx-rename-cancel" type="button">取消</button>
+      <button id="ctx-rename-reset" type="button" title="清空自定义名称，回到首条消息自动生成的标题">恢复默认</button>
+    </div>
+  </div>
+  <div class="ctx-hide-when-edit">
+    <button class="ctx-item" id="ctx-act-rename" type="button">重命名…</button>
+    <button class="ctx-item" id="ctx-copy" type="button">复制标题</button>
+    <button class="ctx-item" id="ctx-copy-id" type="button">复制会话 ID</button>
+    <div class="ctx-sep"></div>
+    <button class="ctx-item danger" id="ctx-hide" type="button">从列表中删除</button>  </div>
 </div>
 
 <script>
@@ -690,19 +869,79 @@
     }
   }
 
-  function newBubble(role, label) {
+  // ---- Thinking 框 ----
+  //
+  // 思考过程用 delta(role=thought) 流式过来，所以天生就是实时的。展示策略：
+  //   思考中  展开 + 蓝点脉冲，让人看得见"它还在想"
+  //   思考完  自动折叠成一个 tag，不占地方
+  //   想回顾  点 header 展开，再点收起
+  // 用户手动点过的框不再被"结束自动折叠"覆盖 —— 正在读的人刚点开就被折起来
+  // 是最烦人的那种"贴心"。
+
+  function toggleThought(el) {
+    el.classList.toggle("collapsed");
+    el.dataset.userToggled = "1";
+  }
+
+  // 思考结束：摘掉 streaming（脉冲停），折叠，除非用户自己开过
+  function finishThought(el) {
+    if (!el) return;
+    el.classList.remove("streaming");
+    if (!el._state) return;
+    el._state.textContent = el._body && el._body.textContent.trim() ? "思考完成" : "（无内容）";
+    if (el.dataset.userToggled === "1") return;
+    el.classList.add("collapsed");
+  }
+
+  function buildThoughtBubble() {
     var el = document.createElement("div");
-    el.className = "bubble " + role;
+    el.className = "bubble thought streaming";
+
+    var head = document.createElement("button");
+    head.type = "button";
+    head.className = "think-head";
+    head.title = "点击展开 / 折叠思考过程";
+    var dot = document.createElement("span");
+    dot.className = "think-dot";
+    var lab = document.createElement("span");
+    lab.className = "think-label";
+    lab.textContent = "Thinking";
+    var st = document.createElement("span");
+    st.className = "think-state";
+    st.textContent = "思考中…";
+    var caret = document.createElement("span");
+    caret.className = "think-caret";
+    caret.textContent = "▾";
+    head.appendChild(dot); head.appendChild(lab); head.appendChild(st); head.appendChild(caret);
+
+    var body = document.createElement("div");
+    body.className = "think-body";
+
+    el.appendChild(head); el.appendChild(body);
+    el._head = head; el._body = body; el._state = st;
     el.dataset.raw = "";
-    if (label) {
-      var lab = document.createElement("div");
-      lab.className = "label";
-      lab.textContent = label;
-      el.appendChild(lab);
-      el._body = document.createElement("div");
-      el.appendChild(el._body);
+    head.addEventListener("click", function () { toggleThought(el); });
+    return el;
+  }
+
+  function newBubble(role, label) {
+    var el;
+    if (role === "thought") {
+      el = buildThoughtBubble();
     } else {
-      el._body = el;
+      el = document.createElement("div");
+      el.className = "bubble " + role;
+      el.dataset.raw = "";
+      if (label) {
+        var lab = document.createElement("div");
+        lab.className = "label";
+        lab.textContent = label;
+        el.appendChild(lab);
+        el._body = document.createElement("div");
+        el.appendChild(el._body);
+      } else {
+        el._body = el;
+      }
     }
     messages.appendChild(el);
     return el;
@@ -712,6 +951,9 @@
   // 渲染后的 textContent 会带上强制的换行和不可见字符）。
   function attachCopy(el) {
     if (el._copyBtn) return;
+    // Thinking 框不给复制按钮：它是 absolute 定位在气泡右上角的，会正好压在
+    // header 上；而且折叠时 body 不可见，按钮浮在一个空壳上更莫名其妙。
+    if (el.classList.contains("thought")) return;
     var btn = document.createElement("button");
     btn.className = "copy-btn";
     btn.type = "button";
@@ -922,6 +1164,18 @@
 
   // 历史记录是静态的，一次性画出来（不走流式）
   function addStaticBubble(role, text) {
+    if (role === "thought") {
+      // 历史里的思考段也走 Thinking 框，并且**默认就是折叠的** ——
+      // 回看旧会话时没人想先读一大段思考才知道结论，跟实时流结束后一致。
+      var t = buildThoughtBubble();
+      t.classList.remove("streaming");
+      t._state.textContent = "思考完成";
+      t.classList.add("collapsed");
+      t.dataset.raw = text || "";
+      t._body.innerHTML = renderMd(t.dataset.raw);
+      messages.appendChild(t);
+      return;
+    }
     var el = document.createElement("div");
     el.className = "bubble " + (role === "user" ? "user" : "assistant");
     el.innerHTML = renderMd(text || "");
@@ -1004,6 +1258,48 @@
            " " + p(d.getHours()) + ":" + p(d.getMinutes());
   }
 
+  // ---- 会话行的两个动作：重命名 / 从列表删除 ----
+  // 后端早就有了（POST /api/session/rename、/api/session/hide，落在
+  // ~/.agentd/session_aliases.json 和 hidden_sessions.json，库本身不动）。
+  // 之前只有行内的 ✎ / × 且藏得几乎看不见，等于没有入口；现在行内按钮和
+  // 右键菜单共用这两个函数。
+  function renameSession(s, newTitle) {
+    return api("/api/session/rename", {
+      method: "POST",
+      body: { session_id: s.id, title: newTitle == null ? "" : newTitle }
+    })
+      .then(function () { return loadSessions(); })
+      .catch(function (err) {
+        showErrorBubble("重命名失败", String((err && err.message) || err));
+      });
+  }
+
+  function hideSession(s) {
+    // 自己写的确认框：原生 confirm 会抢焦点（切模型那次踩过），而且样式统一。
+    //
+    // 语义要讲死：**只移出列表，sessions.db 一行不动**。
+    // 所有会话记录都留着（用户明确要这个语义）—— 隐藏只是把 id 记进
+    // ~/.agentd/hidden_sessions.json，想恢复就把那条 id 从文件里删掉。
+    // 因为写方是 agentd，ACP 协议也没有 session/delete，真删数据得走
+    // agentd 的 scripts/sessions.py，GUI 不代劳。
+    return showConfirm(
+      "从列表中删除对话「" + (s.title || s.id) + "」？",
+      "会话记录会完整保留（仍在 ~/.agentd/sessions.db 里），只是不再显示在侧栏。",
+      "从列表删除",
+      "想让它重新出现在侧栏：删掉 ~/.agentd/hidden_sessions.json 里这条会话的 id。"
+    ).then(function (ok) {
+      if (!ok) return;
+      return api("/api/session/hide", { method: "POST", body: { session_id: s.id } })
+        .then(function () {
+          setStatus("ready", "已从列表删除；会话记录完整保留在数据库中");
+          return loadSessions();
+        })
+        .catch(function (err) {
+          showErrorBubble("删除失败", String((err && err.message) || err));
+        });
+    });
+  }
+
   function renderSessions(list) {
     var box = document.getElementById("session-list");
     box.innerHTML = "";
@@ -1024,6 +1320,7 @@
       var title = document.createElement("div");
       title.className = "si-title";
       title.textContent = s.title || "（空会话）";
+      title.title = s.title || "";
 
       var meta = document.createElement("div");
       meta.className = "si-meta";
@@ -1044,37 +1341,28 @@
       del.className = "si-del";
       del.type = "button";
       del.textContent = "×";
-      del.title = "从侧栏移除该对话（数据库不动）";
+      del.title = "从列表中删除（会话记录仍完整保留在数据库）";
       del.addEventListener("click", function (e) {
         e.stopPropagation();
-        if (!window.confirm("从侧栏移除对话「" + (s.title || s.id) + "」？\n只在列表里隐藏，数据仍在数据库；要彻底清理请用 agentd 的 scripts/sessions.py。")) {
-          return;
-        }
-        api("/api/session/hide", { method: "POST", body: { session_id: s.id } })
-          .then(function () { return loadSessions(); })
-          .catch(function (err) { showErrorBubble("移除失败", String((err && err.message) || err)); });
+        hideSession(s);
       });
       b.appendChild(del);
       var ren = document.createElement("button");
       ren.className = "si-ren";
       ren.type = "button";
       ren.textContent = "✎";
-      ren.title = "重命名该对话（空 = 恢复自动标题）";
+      ren.title = "重命名该对话";
       ren.addEventListener("click", function (e) {
         e.stopPropagation();
-        var newTitle = window.prompt("新的会话名（留空恢复自动标题）", s.title || "");
-        if (newTitle === null) return;
-        api("/api/session/rename", {
-          method: "POST",
-          body: { session_id: s.id, title: newTitle }
-        })
-          .then(function () { return loadSessions(); })
-          .catch(function (err) {
-            showErrorBubble("重命名失败", String((err && err.message) || err));
-          });
+        openCtxMenu(s, ren.getBoundingClientRect());
       });
       b.appendChild(ren);
-      b.addEventListener("click", function () { resumeSession(s.id); });
+      // 右键：以前完全没有 contextmenu 监听，右击什么都不会发生。
+      b.addEventListener("contextmenu", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openCtxMenu(s, { left: e.clientX, top: e.clientY });
+      });      b.addEventListener("click", function () { resumeSession(s.id); });
       box.appendChild(b);
     });
   }
@@ -1156,30 +1444,71 @@
     def.textContent = "默认（agentd .env / Ollama）";
     modelSelect.appendChild(def);
     profiles.forEach(function (p) {
-      var o = document.createElement("option");
-      o.value = p.id;
-      o.textContent = p.name;
-      modelSelect.appendChild(o);
+      var env = p.env || {};
+      var models = (p.models && p.models.length) ? p.models : null;
+      if (models && models.length > 1) {
+        // 一个 provider 下多个模型：用 optgroup 把它们摊开，每项可单独热切换
+        var og = document.createElement("optgroup");
+        og.label = p.name;
+        models.forEach(function (m) {
+          var o = document.createElement("option");
+          o.value = p.id + "::" + m;
+          o.textContent = m;
+          og.appendChild(o);
+        });
+        modelSelect.appendChild(og);
+      } else {
+        var o = document.createElement("option");
+        o.value = p.id;
+        o.textContent = (models && models[0]) ? (p.name + " · " + models[0]) : p.name;
+        modelSelect.appendChild(o);
+      }
     });
-    modelSelect.value = active || "";
+    // 还原当前选择：active profile 记在 models.json，具体模型取其 env 里的 MODEL
+    var sel = "";
+    if (active) {
+      var ap = null;
+      for (var i = 0; i < profiles.length; i++) if (profiles[i].id === active) { ap = profiles[i]; break; }
+      if (ap) {
+        var aenv = ap.env || {};
+        var aprefix = backendKeyPrefix(aenv["AGENTD_LLM_BACKEND"] || "");
+        var amodel = aenv[aprefix + "MODEL"] || "";
+        var amodels = (ap.models && ap.models.length) ? ap.models : null;
+        sel = (amodels && amodels.length > 1) ? (active + "::" + amodel) : active;
+      }
+    }
+    modelSelect.value = sel;
   }
 
   modelSelect.addEventListener("change", function () {
-    var id = modelSelect.value;
-    if (!window.confirm(id ? "切换到「" + (modelSelect.selectedOptions[0] || {}).textContent + "」？会重启 agentd（会话保留）。"
-                           : "切回默认配置？会重启 agentd（会话保留）。")) {
+    var val = modelSelect.value;
+    var parts = val.split("::");
+    var id = parts[0];
+    var model = parts.slice(1).join("::");  // 模型名里一般不含 ::，合并兜底
+    var labelText = (modelSelect.selectedOptions[0] || {}).textContent || "";
+    if (!window.confirm(id
+          ? "热切换到「" + labelText + "」？下一轮对话即用，不重启 agentd。"
+          : "切回默认配置？下一轮对话即用，不重启 agentd。")) {
       loadModels();  // 撤销下拉框的选择
+      input.focus();  // 焦点还给输入框（取消切换也要顺手还）
       return;
     }
-    api("/api/model/select", { method: "POST", body: { id: id } })
+    // window.confirm 会抢焦点、且可能让焦点残留在 <select> 上 → 切完「看似打不了字」。
+    // 先同步把焦点还回输入框，再兜底一次（网络往返完也还）。
+    input.focus();
+    api("/api/model/select", { method: "POST", body: { id: id, model: model } })
       .then(function (r) {
         if (!r.ok) {
           showErrorBubble("切换失败", r.error || "未知错误");
           loadModels();
+          return;
         }
-        // 成功时事件流会推 session/status，选择器状态由下一次 loadModels 刷新
+        // 成功即热切换：agentd 下一轮从热配置文件读新配置，无需重启，会话历史保留。
+        // 刷新下拉框让它反映「当前选中的模型」，否则下拉框还停在上一个选项。
+        loadModels();
       })
-      .catch(function (e) { showErrorBubble("切换失败", String(e)); loadModels(); });
+      .catch(function (e) { showErrorBubble("切换失败", String(e)); loadModels(); })
+      .finally(function () { input.focus(); });
   });
 
   function openModels() {
@@ -1204,21 +1533,41 @@
   function profileFromForm() {
     var name = document.getElementById("m-name").value.trim();
     var backend = document.getElementById("m-backend").value.trim();
-    var model = document.getElementById("m-model").value.trim();
+    // 模型名支持逗号 / 换行分隔多个（一个 provider 下填多个模型，会话内随时切）
+    var modelField = document.getElementById("m-model").value;
+    var modelList = String(modelField).split(/[,\n]/).map(function (s) { return s.trim(); }).filter(Boolean);
     var base = document.getElementById("m-baseurl").value.trim();
     var key = document.getElementById("m-apikey").value;  // key 不 trim，原样收
     var env = { "AGENTD_LLM_BACKEND": backend || "ollama" };
     var prefix = backendKeyPrefix(backend);
-    if (model) env[prefix + "MODEL"] = model;
+    if (modelList.length) env[prefix + "MODEL"] = modelList[0];  // 活动模型取第一个
     if (base) {
-      // 用户只填一个 base 输入框，但变量名因后端而异 —— 三个都设，
-      // 多余的键 agentd 忽略，不会串味（不同后端各读各的 *_BASE_URL）。
+      // 用户只填一个 base 输入框，但变量名因后端而异。
+      // ollama 后端读的是 AGENTD_OLLAMA_HOST（不是 *_BASE_URL）—— 以前这里
+      // 漏了它，导致在 GUI 里永远改不了 Ollama 地址，只能手改 models.json。
+      // 剩下三个也一并设上：多余的键 agentd 忽略，不会串味（各后端各读各的）。
+      if ((backend || "ollama") === "ollama") env["AGENTD_OLLAMA_HOST"] = base;
       env["AGENTD_OPENAI_BASE_URL"] = base;
       env["AGENTD_MIMO_BASE_URL"] = base;
       env["AGENTD_ZHIPU_BASE_URL"] = base;
     }
     if (key) env[prefix + "API_KEY"] = key;
-    return { id: editingId || "", name: name || backend || "模型", env: env, _keepKey: !key };
+    // token 上限：留空 = 键不出现（后端按"键缺失 = 保留旧值"处理，所以这个语义是
+    // "本次不改"）；要关掉限制就明确填 0，而不是清空 —— 清空看不见效果最容易被当成 bug。
+    var maxCtx = document.getElementById("m-maxctx").value.trim();
+    var maxOut = document.getElementById("m-maxout").value.trim();
+    var badTok = null;
+    if (maxCtx !== "") { if (/^\d+$/.test(maxCtx)) env["AGENTD_MAX_CONTEXT_TOKENS"] = maxCtx; else badTok = "上下文预算"; }
+    if (maxOut !== "") { if (/^\d+$/.test(maxOut)) env["AGENTD_MAX_OUTPUT_TOKENS"] = maxOut; else badTok = "回答上限"; }
+    if (badTok) {
+      // 用会话内的错误气泡而不是原生 confirm：后者会抢走输入框焦点
+      // （切模型那次就是它导致"切完模型输入框打不了字"）。
+      showErrorBubble("填错了", badTok + "只能填非负整数 —— 留空 = 不改，填 0 = 不限");
+      return null;
+    }
+    var prof = { id: editingId || "", name: name || backend || "模型", env: env, _keepKey: !key };
+    if (modelList.length > 1) prof.models = modelList;  // 多模型：记到 profile 上，下拉框摊开
+    return prof;
   }
 
   async function saveModelsDialog(profile, afterSave) {
@@ -1237,6 +1586,8 @@
             // 这里不回传就是"不修改"，后端按"键缺失 = 保留旧值"处理。
           }
         }
+        // 表单没带 models（即单模型意图）→ 清掉旧的 models 列表，避免「编辑时删掉多余模型却没生效」
+        if (!("models" in profile)) delete profiles[idx].models;
         profiles[idx] = Object.assign({}, profiles[idx], profile);
       }
     } else {
@@ -1292,13 +1643,24 @@
     var prefix = backendKeyPrefix(env["AGENTD_LLM_BACKEND"]);
     // API Key 永不回填（后端给的也是掩码）；留空提交 = 后端 merge 保留旧值
     document.getElementById("m-apikey").value = "";
-    document.getElementById("m-model").value = env[prefix + "MODEL"] || env["AGENTD_OLLAMA_MODEL"] || "";
-    var baseKeys = ["AGENTD_OPENAI_BASE_URL", "AGENTD_MIMO_BASE_URL", "AGENTD_ZHIPU_BASE_URL"];
+    // 多模型 profile：把 models 列表拼回输入框（逗号分隔）；否则回填当前 MODEL
+    var modelField = "";
+    if (p.models && p.models.length) {
+      modelField = p.models.join(", ");
+    } else {
+      modelField = env[prefix + "MODEL"] || env["AGENTD_OLLAMA_MODEL"] || "";
+    }
+    document.getElementById("m-model").value = modelField;
+    var baseKeys = ["AGENTD_OLLAMA_HOST", "AGENTD_OPENAI_BASE_URL", "AGENTD_MIMO_BASE_URL", "AGENTD_ZHIPU_BASE_URL"];
     var base = "";
     for (var i = 0; i < baseKeys.length; i++) {
       if (env[baseKeys[i]]) { base = env[baseKeys[i]]; break; }
     }
     document.getElementById("m-baseurl").value = base;
+    // token 上限回填原值（没有就清空 = "不限"）。不像 API Key，它们不是秘密，
+    // 而且"改一个配置只动一个字段"时，看不见当前值最容易误设。
+    document.getElementById("m-maxctx").value = env["AGENTD_MAX_CONTEXT_TOKENS"] || "";
+    document.getElementById("m-maxout").value = env["AGENTD_MAX_OUTPUT_TOKENS"] || "";
     mEdit.classList.add("open");
   }
 
@@ -1316,7 +1678,8 @@
 
   document.getElementById("m-add").addEventListener("click", function () {
     editingId = null;
-    ["m-name", "m-backend", "m-model", "m-baseurl", "m-apikey"].forEach(function (id) {
+    ["m-name", "m-backend", "m-model", "m-baseurl", "m-apikey",
+     "m-maxctx", "m-maxout"].forEach(function (id) {
       document.getElementById(id).value = "";
     });
     mEdit.classList.add("open");
@@ -1327,8 +1690,36 @@
     editingId = null;
   });
 
+  document.getElementById("m-probe").addEventListener("click", function () {
+    var btn = document.getElementById("m-probe");
+    var out = document.getElementById("m-probe-out");
+    var host = document.getElementById("m-baseurl").value.trim();
+    if (!host) {
+      out.className = "m-probe-out bad";
+      out.textContent = "先在上面的 Base URL 里填 Ollama 地址";
+      return;
+    }
+    btn.disabled = true;
+    out.className = "m-probe-out";
+    out.textContent = "测试中…";
+    api("/api/ollama/status?host=" + encodeURIComponent(host)).then(function (r) {
+      if (r && r.ok) {
+        out.className = "m-probe-out ok";
+        out.textContent = "连上了 · " + (r.models || []).length + " 个模型：" +
+          (r.models || []).slice(0, 4).join(", ");
+      } else {
+        out.className = "m-probe-out bad";
+        out.textContent = (r && r.error) || "连不上";
+      }
+    }).catch(function (e) {
+      out.className = "m-probe-out bad";
+      out.textContent = String(e);
+    }).then(function () { btn.disabled = false; });
+  });
+
   document.getElementById("m-save").addEventListener("click", function () {
     var profile = profileFromForm();
+    if (!profile) return;   // 字段校验没过（提示已经在 profileFromForm 里弹了）
     saveModelsDialog(profile).then(function () {
       mEdit.classList.remove("open");
       editingId = null;
@@ -1396,6 +1787,161 @@
     }
   }
 
+  // ---- 轻量确认框 ----
+  // 自己实现而不用 window.confirm：原生对话框会抢走输入框焦点（切模型那次
+  // 就是它导致"切完模型输入框打不了字"），样式也不统一。返回 Promise<bool>。
+  var cfBox = document.getElementById("confirm");
+  var cfHint = document.getElementById("cf-hint");
+  // hint：可选的补充说明（比如"怎么撤销"），传 null 就隐藏那一行。
+  function showConfirm(title, detail, okText, hint) {
+    return new Promise(function (resolve) {
+      document.getElementById("cf-title").textContent = title;
+      document.getElementById("cf-detail").textContent = detail || "";
+      if (hint) {
+        cfHint.textContent = hint;
+        cfHint.style.display = "";
+      } else {
+        cfHint.style.display = "none";
+      }
+      var okBtn = document.getElementById("cf-ok");
+      okBtn.textContent = okText || "确定";
+      okBtn.className = "cf-danger";
+      function done(v) {
+        document.removeEventListener("keydown", onKey, true);
+        cfBox.classList.remove("show");
+        resolve(v);
+      }
+      function onKey(e) {
+        if (e.key === "Escape") { e.stopPropagation(); done(false); }
+        else if (e.key === "Enter") { e.stopPropagation(); done(true); }
+      }
+      okBtn.onclick = function () { done(true); };
+      document.getElementById("cf-cancel").onclick = function () { done(false); };
+      cfBox.onclick = function (e) { if (e.target === cfBox) done(false); };
+      document.addEventListener("keydown", onKey, true);
+      cfBox.classList.add("show");
+      okBtn.focus();
+    });
+  }
+
+  // ---- 会话右键菜单 ----
+  var ctxMenu = document.getElementById("ctx-menu");
+  var ctxTarget = null;          // 当前菜单对应的会话对象
+  var ctxRenameInput = document.getElementById("ctx-rename-input");
+
+  function closeCtxMenu() {
+    ctxMenu.classList.remove("open", "renaming");
+    ctxTarget = null;
+  }
+
+  // anchor 可以是 {left, top}（右键点）或一个 DOMRect（点 ✎ 按钮）。
+  function openCtxMenu(s, anchor) {
+    ctxTarget = s;
+    document.getElementById("ctx-head").textContent =
+      (s.title || "（空会话）") + "　·　" + (s.msg_count || 0) + " 条";
+    ctxMenu.classList.remove("renaming");
+    ctxRenameInput.value = s.title || "";
+    ctxMenu.classList.add("open");
+    // 先显示再量，否则 offsetWidth/Height 是 0。定位完再夹进视口。
+    var w = ctxMenu.offsetWidth, h = ctxMenu.offsetHeight;
+    var left, top;
+    if (anchor.right != null) {
+      // 从 ✎ 按钮弹：贴着按钮左侧展开，别盖住自己刚点的那个按钮
+      left = anchor.left - w + 4;
+      top = anchor.top - 4;
+    } else {
+      // 右键：落在光标处，但整体下移一点，别压住这一行的标题
+      // （菜单 head 里已经重复了一次标题，压住就是白遮）。
+      left = anchor.left;
+      top = anchor.top + 6;
+    }
+    var vw = window.innerWidth, vh = window.innerHeight;
+    if (left + w > vw - 8) left = vw - w - 8;
+    if (top + h > vh - 8) top = vh - h - 8;
+    ctxMenu.style.left = Math.max(8, left) + "px";
+    ctxMenu.style.top = Math.max(8, top) + "px";
+  }
+
+  // 菜单里就地改名：不用 window.prompt（同样会抢焦点，且和全局 keydown 打架）。
+  function enterCtxRename() {
+    ctxMenu.classList.add("renaming");
+    ctxRenameInput.focus();
+    ctxRenameInput.select();
+  }
+
+  document.getElementById("ctx-act-rename").addEventListener("click", enterCtxRename);
+  document.getElementById("ctx-rename-cancel").addEventListener("click", function () {
+    ctxMenu.classList.remove("renaming");
+  });
+  document.getElementById("ctx-rename-reset").addEventListener("click", function () {
+    if (!ctxTarget) return;
+    var s = ctxTarget;
+    closeCtxMenu();
+    renameSession(s, "");   // 空标题 = 恢复自动标题
+  });
+  document.getElementById("ctx-rename-ok").addEventListener("click", function () {
+    if (!ctxTarget) return;
+    var s = ctxTarget;
+    var v = ctxRenameInput.value;
+    closeCtxMenu();
+    renameSession(s, v);
+  });
+  ctxRenameInput.addEventListener("keydown", function (e) {
+    e.stopPropagation();   // 别让全局快捷键把输入内容吃掉
+    if (e.key === "Enter") {
+      e.preventDefault();
+      document.getElementById("ctx-rename-ok").click();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeCtxMenu();
+    }
+  });
+
+  document.getElementById("ctx-copy").addEventListener("click", function () {
+    if (!ctxTarget) return;
+    var text = ctxTarget.title || "";
+    closeCtxMenu();
+    navigator.clipboard.writeText(text).then(function () {
+      setStatus("ready", "已复制标题：" + text);
+    }).catch(function () { setStatus("error", "复制失败"); });
+  });
+  document.getElementById("ctx-copy-id").addEventListener("click", function () {
+    if (!ctxTarget) return;
+    var id = ctxTarget.id;
+    closeCtxMenu();
+    navigator.clipboard.writeText(id).then(function () {
+      setStatus("ready", "已复制会话 ID：" + id);
+    }).catch(function () { setStatus("error", "复制失败"); });
+  });
+  document.getElementById("ctx-hide").addEventListener("click", function () {
+    if (!ctxTarget) return;
+    var s = ctxTarget;
+    closeCtxMenu();
+    hideSession(s);
+  });
+
+  // 点菜单外 / Esc / 滚轮都关掉。捕获阶段监听，避免被 stopPropagation 挡掉。
+  document.addEventListener("pointerdown", function (e) {
+    if (!ctxMenu.classList.contains("open")) return;
+    if (ctxMenu.contains(e.target)) return;
+    closeCtxMenu();
+  }, true);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && ctxMenu.classList.contains("open")) {
+      e.stopPropagation();
+      closeCtxMenu();
+    }
+  }, true);
+  window.addEventListener("blur", closeCtxMenu);
+  // 会话列表重渲染后菜单的指向对象已失效，顺手关掉。
+  window.addEventListener("resize", closeCtxMenu);
+  // 侧栏空白处右击：屏蔽 Electron 的原生上下文菜单，但不要打开我们的菜单
+  //（那里确实没有会话可操作）。会话行自己的 contextmenu 会 stopPropagation。
+  document.getElementById("sidebar").addEventListener("contextmenu", function (e) {
+    e.preventDefault();
+    closeCtxMenu();
+  });
+
   function showErrorBubble(label, text) {
     var b = newBubble("error", label);
     appendText(b, text);
@@ -1423,8 +1969,11 @@
     mcpPane.classList.remove("open");
   });
 
-  // 常用工具 chips：memory（自研 bundled）等。in_config=true 的显示"已添加"
-  // 并禁用；点击未添加的走 POST /api/mcp/presets/add（写盘 + 重启 agentd）。
+  // 常用工具 chips。
+  // in_config=true = 已经在 ~/.forgeagent/mcp.json 里、agentd 已经加载，
+  // **此刻就能被模型调用**，不需要再点任何东西 —— 所以渲染成 <span> 状态标签，
+  // 不是 button。写成 disabled 按钮会让人以为"还没生效、还得再按一下"。
+  // 未添加的才是真按钮，点它走 POST /api/mcp/presets/add（写盘 + 重启 agentd）。
   async function loadMcpPresets() {
     var box = document.getElementById("mcp-presets");
     box.textContent = "加载中…";
@@ -1432,14 +1981,21 @@
       var res = await api("/api/mcp/presets");
       box.textContent = "";
       (res.presets || []).forEach(function (p) {
+        var hint = p.summary + (p.bundled ? "（自带，免安装）" : "（需要 pip 安装）");
+        if (p.in_config) {
+          var tag = document.createElement("span");
+          tag.className = "m-chip in-config";
+          tag.textContent = p.name;
+          tag.title = hint + " —— 已写入配置，agentd 已加载，可随时被模型调用";
+          box.appendChild(tag);
+          return;
+        }
         var chip = document.createElement("button");
         chip.type = "button";
         chip.className = "m-chip";
-        chip.title = p.summary + (p.bundled ? "（自带，免安装）" : "（需要 pip 安装）");
-        chip.textContent = p.in_config ? p.name + " · 已添加" : p.name;
-        if (p.in_config) chip.disabled = true;
+        chip.title = hint + "（点一下写入配置并重启 agentd）";
+        chip.textContent = p.name;
         chip.addEventListener("click", function () {
-          if (chip.disabled) return;
           chip.disabled = true;
           api("/api/mcp/presets/add", { method: "POST", body: { name: p.name } })
             .then(function (r) {
@@ -1496,7 +2052,7 @@
     modeSel.disabled = true;
     api("/api/mode", { method: "POST", body: { mode_id: modeSel.value } })
       .catch(function (e) { showErrorBubble("模式切换失败", String((e && e.message) || e)); })
-      .finally(function () { modeSel.disabled = false; });
+      .finally(function () { modeSel.disabled = false; input.focus(); });
   });
 
   // ---- 事件处理 ----
@@ -1547,7 +2103,11 @@
       // 换角色就换一个气泡：正文 / 思考 / 错误分开显示，别糊在一起
       var want = ev.role;
       if (!current || current.dataset.role !== want) {
-        current = newBubble(want, want === "thought" ? "思考" : (want === "error" ? "错误" : null));
+        // 角色从 thought 切走 = 这一段思考完了，收尾并自动折叠
+        if (current && current.dataset.role === "thought") finishThought(current);
+        // thought 的标题由 buildThoughtBubble 自己写（Thinking + 状态），
+        // 不走 label 参数那条路。
+        current = newBubble(want, want === "error" ? "错误" : null);
         current.dataset.role = want;
       }
       appendText(current, ev.text);
@@ -1568,9 +2128,15 @@
 
     if (ev.type === "done") {
       if (current) {
-        current.dataset.raw = current.dataset.raw; // 保持不变
+        // 收尾还挂着的思考段：一轮里 thought/assistant 可能来回切好几次，
+        // 逐个 query 收，不用在前端维护"本轮 thought 列表"这种易漏的状态。
+        if (current.dataset.role === "thought") finishThought(current);
         attachCopy(current);  // 本轮回答定格：给气泡配上复制按钮
         current = null;
+      }
+      var streamingThinks = messages.querySelectorAll(".bubble.thought.streaming");
+      for (var ti = 0; ti < streamingThinks.length; ti++) {
+        finishThought(streamingThinks[ti]);
       }
       if (ev.stop === "cancelled") {
         // 内核在工具边界收尾时，来不及完成的调用不会再有 ToolCallDone；
@@ -1649,6 +2215,11 @@
     }
   });
   document.addEventListener("keydown", function (e) {
+    // 确认框 / 右键菜单开着时，别让快捷键穿透到背后的会话
+    // （否则在重命名框里按 Ctrl+Enter 会把消息发出去）。
+    var uiBlocking = cfBox.classList.contains("show") ||
+                     ctxMenu.classList.contains("open");
+    if (uiBlocking) return;
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); submit(); }
     if ((e.ctrlKey || e.metaKey) && (e.key === "l" || e.key === "L")) {
       e.preventDefault();

@@ -80,6 +80,13 @@ class AcpError(RuntimeError):
 # 否则最坏情况只是错误退化成普通思考文本显示，不会崩。
 ERROR_MARK = "[错误]"
 
+# agentd 的 Notice 事件（上下文裁剪提示之类）也借 thought 通道下发 —— ACP 没有
+# "系统提示"这一路。约定同 ERROR_MARK，只是这两个前缀识别出来的内容分开放：
+# 错误用红色，提示用淡灰，都不混进模型的思考文本里。
+# ⚠️ 两个仓库各自定义同一个字面量：agentd/agentd/transports/acp_stdio.py 的
+#    _NOTICE_MARK。不一致时最坏是提示退化成普通思考文本，不会崩。
+NOTICE_MARK = "[提示]"
+
 # agentd 在"用户拒绝了这次工具调用"时回灌给模型的固定开头
 # （见 agentd/kernel/modes/agent.py 的 `用户拒绝执行`）。
 #
@@ -149,6 +156,7 @@ class Turn:
     user: str = ""
     text: str = ""
     thought: str = ""  # 思考通道，ACP 里客户端通常暗色渲染
+    notice: str = ""  # 系统提示（上下文裁剪之类），从 thought 通道里识别出来，见 NOTICE_MARK
     stop_reason: str = ""
     error: str = ""  # 从 thought 通道里识别出来的错误，见 ERROR_MARK
     unknown: list[str] = field(default_factory=list)  # 未识别的事件类型，调试用
@@ -727,6 +735,10 @@ class AcpClient:
             if chunk.startswith(ERROR_MARK) or turn.error:
                 body = chunk[len(ERROR_MARK):].lstrip() if chunk.startswith(ERROR_MARK) else chunk
                 turn.error += body
+            elif chunk.startswith(NOTICE_MARK) or turn.notice:
+                # 同错误一路过来，单独存放：这是系统说的话，不是模型在思考
+                head = chunk[len(NOTICE_MARK):].lstrip() if chunk.startswith(NOTICE_MARK) else chunk
+                turn.notice += head
             else:
                 turn.thought += chunk
         elif kind in ("agent_message_chunk", ""):

@@ -24,6 +24,25 @@ from pathlib import Path
 # CWD，否则"从 VSCode 启动看不到从终端聊过的记录"这种灵异现象就来了。
 DEFAULT_DB_PATH = Path.home() / ".agentd" / "sessions.db"
 
+# 只给模型看、不参与 UI 回放的角色。
+# role="tool" 的模型价值是"上一轮工具返回了什么"，而它恰好就是旁边那张工具卡
+# 片的 output —— 画出来等于同一份内容显示两遍。（详见 get_history 的 docstring）
+_MODEL_ONLY_ROLES = frozenset({"tool", "system"})
+
+
+def _has_tool_calls(payload: str | None) -> bool:
+    """这条 assistant 是"举手要调工具"吗 —— 是的话 UI 不该给它一个气泡。
+
+    payload 解析不动就当普通 assistant：宁可多画一个气泡，也别把用户的回答吞了。
+    """
+    if not payload:
+        return False
+    try:
+        parsed = json.loads(payload)
+    except ValueError:
+        return False
+    return bool(isinstance(parsed, dict) and parsed.get("tool_calls"))
+
 
 def db_path() -> Path:
     """会话库路径：环境变量优先，否则 ~/.agentd/sessions.db。"""
@@ -160,6 +179,17 @@ class SessionsSource:
         整个调用：call_id/title/kind/status/output）。冗余列 content 只存了
         title，卡片要完整重放就得把 payload 解开带出去 —— 前端按
         renderToolCard 渲染。解析失败当空卡片处理，一行坏数据不能拖垮整个回放。
+
+        另外两种**要跳过**的行：
+
+        - ``assistant`` 且 payload.tool_calls 非空 —— "举手要调工具"那一行。
+          它本身通常只有一句前言（甚至空串），紧接着的工具卡片已经把这次动作
+          表达完了；画出来就是一串空白气泡。
+        - ``role="tool"`` —— 工具的真实返回值，同时是紧邻那张卡片的 output。
+          这一行存在的意义是**让模型下一轮还能看到自己读过什么**（跨轮上下文），
+          跟 UI 回放无关，画出来就把同一份输出显示了两遍。
+
+        两者都是给模型的、不是给人看的。
         """
         conn = _open(self.path)
         if conn is None:
@@ -189,12 +219,18 @@ class SessionsSource:
 
         out: list[dict] = []
         for r, n, c, p in rows:
+            if r in _MODEL_ONLY_ROLES:
+                # 给模型看的行（见 docstring）：UI 回放一律跳过
+                continue
             item = {"role": r, "name": n, "content": (c or "")}
             if r == "tool_record":
                 try:
                     item["tool_record"] = (json.loads(p) or {}).get("tool_record") or {}
                 except ValueError:
                     item["tool_record"] = {}
+            elif r == "assistant" and _has_tool_calls(p):
+                # 工具卡已经代表了这次动作，别再画一个多半是空的气泡
+                continue
             out.append(item)
         return out
 

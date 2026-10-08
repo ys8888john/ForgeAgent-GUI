@@ -74,6 +74,11 @@ def _launch_electron(*, cwd: str | None) -> None:
     local_bin = electron_dir / "node_modules" / ".bin" / bin_name
 
     env = dict(os.environ)
+    # 关键坑：某些宿主/CI 环境会预设 ELECTRON_RUN_AS_NODE=1（让 node 工具链能跑），
+    # 但这个变量会让 Electron 二进制退化成「裸 node」去执行 main.js，此时
+    # require("electron") 里 app 是 undefined，直接 TypeError 崩溃。拉起 Electron
+    # 前必须清掉它，否则窗口永远起不来。run-windows.bat 走同一路径，一并治本。
+    env.pop("ELECTRON_RUN_AS_NODE", None)
     # electron.cmd 内部用 `node` 起 cli.js；本机 node 往往不在 PATH（只有 WorkBuddy
     # 托管的全路径可用），先把 node 目录塞进 PATH，否则 electron.cmd 报
     # "node 不是内部或外部命令"。

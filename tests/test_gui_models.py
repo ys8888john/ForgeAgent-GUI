@@ -4,7 +4,8 @@
 1. profile 只能带 AGENTD_* 前缀的键（防「任意环境变量注入」）；
 2. 编辑留空不丢旧 key（merge 语义）；
 3. GET 层脱敏不回写真值 —— 掩码串绝不能覆盖真实 API Key；
-4. 切换模型 = 用新 env 重启 agentd 子进程，会话 id 尽量保住。
+4. 切换模型 = 把选中 profile 的 env 写进热配置文件（hotenv.json），
+   运行中 agentd 下一轮即用，**不重启子进程**、会话历史保留。
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from forgeagent.gui.server import UiServer
 def _tmp_home(tmp_path, monkeypatch):
     """把 ~/.forgeagent 指到临时目录，绝不碰用户真实配置。"""
     monkeypatch.setattr(M, "models_path", lambda: tmp_path / "models.json")
+    monkeypatch.setattr(M, "hotenv_path", lambda: tmp_path / "hotenv.json")
     yield
 
 
@@ -156,17 +158,42 @@ def test_models_crud_over_http(server):
     assert "sk-" in p["env"]["AGENTD_ZHIPU_API_KEY"]
 
 
-def test_select_restarts_agent_and_keeps_session(server):
+def test_select_hot_swaps_without_restart(server):
     c = _client(server)
     c.post("/api/models", {"data": {"active": None, "profiles": [
-        {"id": "z1", "name": "智谱", "env": {"AGENTD_LLM_BACKEND": "zhipu"}},
+        {"id": "z1", "name": "智谱", "env": {"AGENTD_LLM_BACKEND": "zhipu",
+                                              "AGENTD_ZHIPU_API_KEY": "sk-x"}},
     ]}})
     r = c.post("/api/model/select", {"id": "z1"})
     assert r["ok"], r
-    assert r["session"] == "sess_original123"        # 旧会话保住了
-    assert server._fake.restarts == 1                # 子进程重启过
-    assert server._fake.env == {"AGENTD_LLM_BACKEND": "zhipu"}
+    assert r["hot_swapped"] is True
+    # 关键：热切换不重启 agentd —— 子进程没动过，会话历史自然保留
+    assert server._fake.restarts == 0
+    assert server._fake.session_id == "sess_original123"
+    assert server._fake.env is None          # 不再把 env 注入子进程，改走热文件
+    # 选中的 env 写进了热配置文件，agentd 下一轮读它即用
+    hot = M.hotenv_path()
+    assert hot.exists()
+    data = json.loads(hot.read_text(encoding="utf-8"))
+    assert data["AGENTD_LLM_BACKEND"] == "zhipu"
+    assert data["AGENTD_ZHIPU_API_KEY"] == "sk-x"
     assert M.load_models()["active"] == "z1"
+
+
+def test_select_switches_model_within_profile(server):
+    """同一 provider 下填了多个模型：切到其中一个，只改 MODEL 写进热文件。"""
+    c = _client(server)
+    c.post("/api/models", {"data": {"active": None, "profiles": [
+        {"id": "z1", "name": "智谱", "models": ["glm-4.5-air", "glm-4.6"],
+         "env": {"AGENTD_LLM_BACKEND": "zhipu", "AGENTD_ZHIPU_API_KEY": "sk-x",
+                 "AGENTD_ZHIPU_MODEL": "glm-4.5-air"}},
+    ]}})
+    r = c.post("/api/model/select", {"id": "z1", "model": "glm-4.6"})
+    assert r["ok"], r
+    assert r["model"] == "glm-4.6"
+    data = json.loads(M.hotenv_path().read_text(encoding="utf-8"))
+    assert data["AGENTD_ZHIPU_MODEL"] == "glm-4.6"
+    assert data["AGENTD_ZHIPU_API_KEY"] == "sk-x"   # 其余字段沿用
 
 
 def test_select_unknown_profile_404(server):
@@ -182,18 +209,21 @@ def test_select_default_clears_active(server):
     ]}})
     c.post("/api/model/select", {"id": "z1"})
     assert M.load_models()["active"] == "z1"
+    assert M.hotenv_path().exists()           # 切到 z1：热文件已写
     r = c.post("/api/model/select", {"id": ""})
     assert r["ok"]
     assert M.load_models()["active"] is None
+    assert not M.hotenv_path().exists()       # 切回默认：热文件删掉，agentd 回落到自己 .env
     assert server._fake.env is None
 
 
 def test_server_startup_applies_active_profile(tmp_path):
     """用户报的 bug（2026-09-22）：配置了 provider、重启 GUI 后又回到默认
-    ollama —— models.json 的 active 明明还在，但启动时没人注入 env。
+    ollama —— models.json 的 active 明明还在，但启动时没人把它交给 agentd。
 
-    锁定行为：UiServer 创建真 Bridge 时必须把 active profile 的 env 带到
-    AcpClient 上，重启 GUI 后 provider 自动生效。
+    新行为：UiServer 启动时把 active profile 的 env 写进热配置文件（hotenv.json），
+    并设 AGENTD_HOTENV 让 agentd 每轮都读它；重启 GUI 后 provider 自动生效，
+    且**不再把 env 直接注入子进程**（避免和「真实环境变量最优先」的语义打架）。
     """
     M.save_models({"active": "z1", "profiles": [
         _profile("z1", env={"AGENTD_LLM_BACKEND": "zhipu",
@@ -203,18 +233,100 @@ def test_server_startup_applies_active_profile(tmp_path):
     srv = UiServer()  # 真 Bridge + 真 AcpClient（不 start，不起进程）
     try:
         client = srv.bridge._client
-        assert client._env == {"AGENTD_LLM_BACKEND": "zhipu",
-                               "AGENTD_ZHIPU_API_KEY": "sk-live-key-123"}
+        assert client._env is None  # env 不再注入子进程
+        hot = M.hotenv_path()
+        assert hot.exists()         # active profile 的 env 已写进热文件
+        data = json.loads(hot.read_text(encoding="utf-8"))
+        assert data == {"AGENTD_LLM_BACKEND": "zhipu",
+                        "AGENTD_ZHIPU_API_KEY": "sk-live-key-123"}
     finally:
         srv.stop()
 
 
 def test_server_startup_without_active_uses_no_env(tmp_path):
-    """没配过 provider（active=None）：不能注入半截 env，行为与从前一致。"""
+    """没配过 provider（active=None）：热文件应保持不存在，行为与从前一致。"""
     M.save_models({"active": None, "profiles": [_profile("z1")]})
 
     srv = UiServer()
     try:
         assert srv.bridge._client._env is None
+        assert not M.hotenv_path().exists()
     finally:
         srv.stop()
+
+
+# ---- per-profile 的 token 预算 ----
+#
+# 为什么必须 per-profile：本机 qwen3.5 常见窗口 4k~40k，云端 GLM / MiMo 是 128k，
+# 差三倍以上。做成全局一个值，必然「本地那个溢出、云端那个浪费」，
+# 而溢出的症状是模型悄悄把开头忘了 —— 用户只会觉得"它变笨了"。
+
+def test_token_limits_survive_a_profile_roundtrip():
+    env = {
+        "AGENTD_LLM_BACKEND": "ollama",
+        "AGENTD_MAX_CONTEXT_TOKENS": "8192",
+        "AGENTD_MAX_OUTPUT_TOKENS": "1024",
+    }
+    M.save_models({"active": "p1", "profiles": [_profile("p1", env=env)]})
+
+    assert M.env_for("p1") == env
+    assert M.load_models()["profiles"][0]["env"]["AGENTD_MAX_CONTEXT_TOKENS"] == "8192"
+
+
+def test_token_limits_are_not_masked_like_api_keys(server):
+    """GET 出来给前端时，这两个值必须**原样**（不像 API Key 那样脱敏）。
+
+    理由：编辑表单要回填它们。回填一个 "81…92" 的掩码串，用户一保存就把掩码
+    写成了真配置 —— 症状是"预算设了但没生效"，而且数字变成 NaN 也不报错。
+    """
+    M.save_models({"active": "p1", "profiles": [
+        _profile("p1", env={
+            "AGENTD_MAX_CONTEXT_TOKENS": "8192",
+            "AGENTD_MAX_OUTPUT_TOKENS": "1024",
+            "AGENTD_ZHIPU_API_KEY": "abcdefghijklmnop",
+        }),
+    ]})
+
+    listed = _client(server).get("/api/models")["profiles"][0]["env"]
+    assert listed["AGENTD_MAX_CONTEXT_TOKENS"] == "8192"
+    assert listed["AGENTD_MAX_OUTPUT_TOKENS"] == "1024"
+    # KEY 语义的键照旧脱敏 —— 同一个出口必须能区分"秘密"和"只是个数字"
+    assert "…" in listed["AGENTD_ZHIPU_API_KEY"]
+    assert "abcdefghijklmnop" not in listed["AGENTD_ZHIPU_API_KEY"]
+
+
+def test_token_limits_reach_the_hotenv_file(server):
+    """切 profile 时预算要跟到热文件里 —— 否则「切了模型但预算没跟着变」，
+    而且症状是随模型而变的（本地模型溢出、云端模型答一半被截），极难联系到
+    "预算没切换"这一点。
+    """
+    M.save_models({"active": "p1", "profiles": [
+        _profile("p1", env={
+            "AGENTD_LLM_BACKEND": "openai_compat",
+            "AGENTD_MAX_CONTEXT_TOKENS": "4096",
+            "AGENTD_MAX_OUTPUT_TOKENS": "512",
+        }),
+    ]})
+
+    r = _client(server).post("/api/model/select", {"id": "p1"})
+    assert r["ok"] is True
+
+    data = json.loads(M.hotenv_path().read_text(encoding="utf-8"))
+    assert data["AGENTD_MAX_CONTEXT_TOKENS"] == "4096"
+    assert data["AGENTD_MAX_OUTPUT_TOKENS"] == "512"
+
+
+def test_zero_disables_the_limit_rather_than_keeping_the_old_one():
+    """明确的 0 = 不限，必须**覆盖**旧值，不能被 merge 语义当成"留空不改"。
+
+    这条最容易被写坏：UI 的「留空=不改」靠的是"键缺失"，而 0 是个真值，
+    它必须穿透。
+    """
+    M.save_models({"active": "p1", "profiles": [
+        _profile("p1", env={"AGENTD_MAX_CONTEXT_TOKENS": "8192"}),
+    ]})
+    M.save_models({"active": "p1", "profiles": [
+        _profile("p1", env={"AGENTD_MAX_CONTEXT_TOKENS": "0"}),
+    ]})
+
+    assert M.env_for("p1")["AGENTD_MAX_CONTEXT_TOKENS"] == "0"

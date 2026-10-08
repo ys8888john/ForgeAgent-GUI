@@ -411,6 +411,35 @@ def test_thought_and_error_go_to_their_own_roles():
         bridge.close()
 
 
+def test_notice_reaches_frontend_as_its_own_role():
+    """系统提示要单独一个 role：混进 thought 会被折叠进思考框，用户根本看不到。
+
+    这正是"上下文被裁了却不吭声"的那类静默故障 —— 裁剪是系统替用户做的主张，
+    必须走到他能看见的地方。
+    """
+
+    class _NoticeClient(_FakeClient):
+        async def prompt(self, text: str):
+            turn = Turn(user=text)
+            turn.notice = "上下文超出预算，省略了较早的 3 条历史消息"
+            yield turn
+            turn.text = "基于剩余上下文的回答"
+            yield turn
+            turn.stop_reason = "end_turn"
+            yield turn
+
+    bridge = Bridge(client=_NoticeClient())
+    try:
+        bridge.send("继续聊")
+        evs = _drain_until_done(bridge)
+        roles = [e["role"] for e in evs if e["type"] == "delta"]
+        assert roles == ["notice", "assistant"]
+        notice = [e for e in evs if e["type"] == "delta" and e["role"] == "notice"][0]
+        assert "省略了较早的 3 条" in notice["text"]
+    finally:
+        bridge.close()
+
+
 # ---- 工具调用事件 ----
 
 class _ToolClient(_FakeClient):

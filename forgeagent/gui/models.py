@@ -54,6 +54,40 @@ def models_path() -> Path:
     return Path.home() / _FORGE_DIR / _MODELS_FILE
 
 
+def hotenv_path() -> Path:
+    """GUI 写入 agentd 的「热配置文件」路径。
+
+    agentd 的 current_settings() 每轮都读这个文件（路径由启动时的 AGENTD_HOTENV
+    环境变量告诉它，GUI 负责设好）。切模型时 GUI 把选中的 profile 环境变量写进来，
+    运行中的 agentd 下一轮即生效 —— 不用重启子进程。
+    """
+    return Path.home() / _FORGE_DIR / "hotenv.json"
+
+
+def write_hotenv(env: dict) -> None:
+    """把一组 AGENTD_* 环境变量写进热配置文件（GUI 切模型时不重启 agentd 的主通道）。
+
+    只收白名单前缀的键；原子替换（先写 .tmp 再 os.replace），避免 agentd 读到半截 JSON。
+    内容与 models.json 同级同权（可能含明文 API Key），不进仓库。
+    """
+    p = hotenv_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    clean = {str(k): str(v) for k, v in (env or {}).items() if _ALLOWED_KEY.match(str(k))}
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(clean, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(tmp, p)
+
+
+def clear_hotenv() -> None:
+    """没有激活的 profile（默认配置）时删掉热文件，让 agentd 回落到自己的 .env。"""
+    try:
+        hotenv_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _read_raw() -> dict:
     p = models_path()
     try:
@@ -99,6 +133,17 @@ def save_models(data: dict) -> dict:
                                     and "…" in newv and newv == f"{oldv[:3]}…{oldv[-3:]}"):
                     env[k] = oldv  # 缺失（留空不改）或原样传回的脱敏掩码 → 保留旧值
         p = {**p, "env": {k: v for k, v in env.items() if _ALLOWED_KEY.match(str(k))}}
+        # models：一个 provider 下可填多个模型（逗号分隔），供会话内随时切换。
+        # 以表单提交为准：显式带 models（即使是空列表）就按它来；表单没带
+        # （单模型表单）就不保留旧列表，避免「编辑时删掉多余模型却没生效」。
+        new_models = p.get("models")
+        if new_models is not None:
+            ms = [str(m).strip() for m in new_models if str(m).strip()]
+            if ms:
+                seen: set[str] = set()
+                p["models"] = [m for m in ms if not (m in seen or seen.add(m))]
+            else:
+                p.pop("models", None)
         merged[pid] = p  # id 重复：后者覆盖前者（列表顺序即优先级）
 
     active = data.get("active")
@@ -119,6 +164,8 @@ def sanitize_profile(p: dict) -> dict:
     """规范化一个 profile：剥掉不允许的键、给空 id 起名、限制长度。
 
     id 冲突时带时间戳后缀 —— 保存方（UI）允许同名存在，读取侧靠 id 区分。
+    允许带一个可选的 ``models`` 列表（一个 provider 下多个模型名），
+    供会话内随时切换；纯元数据，不受 AGENTD_* 白名单约束。
     """
     pid = str(p.get("id") or "").strip()
     if not _ID_OK.match(pid):
@@ -132,7 +179,15 @@ def sanitize_profile(p: dict) -> dict:
             continue
         v = "" if v is None else str(v)
         env[k] = v
-    return {"id": pid, "name": name[:40], "env": env}
+    out = {"id": pid, "name": name[:40], "env": env}
+    models_raw = p.get("models")
+    if isinstance(models_raw, (list, tuple)):
+        seen: set[str] = set()
+        models = [str(m).strip() for m in models_raw if str(m).strip()]
+        models = [m for m in models if not (m in seen or seen.add(m))]
+        if models:
+            out["models"] = models
+    return out
 
 
 def env_for(profile_id: str | None) -> dict[str, str]:
