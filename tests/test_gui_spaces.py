@@ -209,3 +209,42 @@ def test_pick_directory_returns_picked(tmp_path, monkeypatch):
         assert res2["path"] is None
     finally:
         srv.stop()
+
+
+def test_space_ensure_path_idempotent(tmp_path):
+    """/api/space/ensure：目录落地成空间并激活；重复调用幂等，cwd 跟着走。"""
+    target = tmp_path / "proj"
+    target.mkdir()
+    srv = _server_with_spaces(tmp_path)
+    try:
+        res = srv.client().post("/api/space/ensure", {"path": str(target)})
+        assert res["ok"] is True
+        assert res["active"] == "proj"
+        assert res["space"]["path"] == str(target)
+        # server 的当前空间与 client cwd 都切到了新目录
+        assert srv.current_space_name == "proj"
+        assert srv.current_space_dir == str(target)
+        assert "proj" in srv.bridge._client._cwd.replace("\\", "/")
+
+        # 同一路径再来一次：不报重名错，还是同一个空间（幂等）
+        res2 = srv.client().post("/api/space/ensure", {"path": str(target)})
+        assert res2["ok"] is True
+        assert res2["active"] == "proj"
+        assert [s["name"] for s in res2["spaces"]].count("proj") == 1
+        assert srv.client().get("/api/spaces")["active"] == "proj"
+
+        # 缺 path 应 400
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{srv.port}/api/space/ensure",
+            data=json.dumps({}).encode("utf-8"),
+            method="POST",
+            headers={"X-ForgeAgent-Token": srv.token, "Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=30)
+        assert exc.value.code == 400
+    finally:
+        srv.stop()

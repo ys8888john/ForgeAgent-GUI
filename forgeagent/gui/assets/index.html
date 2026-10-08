@@ -141,6 +141,33 @@
   }
   .w-sendbtn:hover { opacity: .85; }
   .w-sendbtn:disabled { opacity: .4; cursor: default; }
+  /* 底栏的目录 chip 可点：hover 给出「能按」的暗示 */
+  #w-space { cursor: pointer; border-radius: 6px; padding: 2px 6px; max-width: 280px; }
+  #w-space:hover { background: var(--bg-soft); color: var(--text); }
+  /* 工作目录选择菜单（点 #w-space 弹出，向上展开） */
+  #w-menu {
+    position: fixed; z-index: 92; min-width: 260px; max-width: 360px; display: none;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 4px;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, .18);
+  }
+  #w-menu.open { display: block; }
+  #w-menu .wm-head {
+    padding: 7px 10px 5px; font-size: 11px; color: var(--text-dim);
+  }
+  #w-menu .wm-item {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    background: none; border: none; border-radius: 6px;
+    padding: 7px 10px; font-size: 12px; color: var(--text); cursor: pointer;
+  }
+  #w-menu .wm-item:hover { background: #eceef1; }
+  #w-menu .wm-item.active { font-weight: 600; }
+  #w-menu .wm-item .wm-path {
+    flex: 1; min-width: 0; text-align: right; font-size: 10px;
+    color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: var(--mono);
+  }
+  #w-menu .wm-sep { height: 1px; background: var(--border); margin: 4px 6px; }
   #sidebar-head {
     display: flex; align-items: center; justify-content: space-between;
     padding: 10px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
@@ -621,6 +648,15 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- 工作目录选择菜单：点欢迎页底栏的 📁 弹出（fixed 定位，JS 摆位） -->
+    <div id="w-menu">
+      <div class="wm-head">选择工作目录（会话将绑定到该目录）</div>
+      <div id="wm-list"></div>
+      <div class="wm-sep"></div>
+      <button class="wm-item" id="wm-pick" type="button">📂 选择其他目录…</button>
+      <button class="wm-item" id="wm-new" type="button">＋ 新建空间…</button>
     </div>
 
     <div id="composer">
@@ -2094,6 +2130,10 @@
       if (!r.ok) { showErrorBubble("切换空间失败", r.error || "未知错误"); return; }
       setStatus("ready", "已切换到空间 " + name);
       loadSpaces();
+      // 会话的空间归属在 session/new 时定死：当前挂着的是空会话的话，它还绑在
+      // 原空间，发消息会落错目录 —— 开个新会话绑到新空间（有内容的会话不动，
+      // 切换只影响之后的新会话）。
+      if (messages.children.length === 0) newChat();
     } catch (e) {
       showErrorBubble("切换空间失败", String(e && e.message ? e.message : e));
     }
@@ -2347,6 +2387,106 @@
   renderWelcomeCats();
   renderWelcomeChips();
   syncWelcome();
+
+  // ---- 工作目录选择菜单：点欢迎页底栏的 📁 弹出（对标 WorkBuddy 底栏的目录选择）----
+  var wMenu = document.getElementById("w-menu");
+  var wmList = document.getElementById("wm-list");
+  var wmPick = document.getElementById("wm-pick");
+  var wmNew = document.getElementById("wm-new");
+  var wmSpaces = [];  // 最近一次 /api/spaces 的快照；选目录时拿 active.path 当初始位置
+
+  function closeWMenu() { wMenu.classList.remove("open"); }
+
+  async function openWMenu() {
+    if (busy || !started) return;
+    try {
+      var res = await api("/api/spaces");
+      wmSpaces = res.spaces || [];
+      wmList.innerHTML = "";
+      wmSpaces.forEach(function (s) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "wm-item" + (s.is_active ? " active" : "");
+        var label = document.createElement("span");
+        label.textContent = (s.is_active ? "● " : "○ ") + s.name;
+        var p = document.createElement("span");
+        p.className = "wm-path";
+        p.textContent = s.path || "";
+        p.title = s.path || "";
+        b.appendChild(label);
+        b.appendChild(p);
+        b.addEventListener("click", async function () {
+          if (busy || !started) return;
+          if (s.is_active) { closeWMenu(); return; }  // 点的就是当前目录，收工
+          try {
+            var r = await api("/api/space/switch", { method: "POST", body: { name: s.name } });
+            if (!r.ok) { showErrorBubble("切换空间失败", r.error || "未知错误"); return; }
+            closeWMenu();
+            loadSpaces();
+            // 旧会话绑在原空间；现在挂着的是空会话，开个新会话才真正绑到新目录
+            if (messages.children.length === 0) newChat();
+          } catch (e) {
+            showErrorBubble("切换空间失败", String(e && e.message ? e.message : e));
+          }
+        });
+        wmList.appendChild(b);
+      });
+      // 摆位：chip 在屏幕下部，菜单从它上沿向上展开（向下放会溢出视口）
+      var rect = wSpace.getBoundingClientRect();
+      wMenu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 320)) + "px";
+      wMenu.style.top = "auto";
+      wMenu.style.bottom = (window.innerHeight - rect.top + 6) + "px";
+      wMenu.classList.add("open");
+    } catch (e) {
+      showErrorBubble("读取空间失败", String(e && e.message ? e.message : e));
+    }
+  }
+
+  wSpace.addEventListener("click", function () {
+    if (wMenu.classList.contains("open")) closeWMenu();
+    else openWMenu();
+  });
+
+  // 「选择其他目录…」：原生对话框选一个目录 → /api/space/ensure 幂等落地成空间
+  // （目录已有对应空间就直接激活，不报重名）→ 开新会话绑过去
+  wmPick.addEventListener("click", async function () {
+    if (busy || !started) return;
+    var cur = null;
+    for (var i = 0; i < wmSpaces.length; i++) {
+      if (wmSpaces[i].is_active) { cur = wmSpaces[i]; break; }
+    }
+    try {
+      var r = await api("/api/pick-directory", {
+        method: "POST",
+        body: { initial: cur ? cur.path : null },
+      });
+      var p = (r && r.path) || null;
+      if (!p) { closeWMenu(); return; }  // 用户取消了，原地不动
+      var r2 = await api("/api/space/ensure", { method: "POST", body: { path: p } });
+      if (!r2.ok) { showErrorBubble("切换工作目录失败", r2.error || "未知错误"); return; }
+      closeWMenu();
+      loadSpaces();
+      if (messages.children.length === 0) newChat();
+    } catch (e) {
+      showErrorBubble("选择目录失败", String(e && e.message ? e.message : e));
+    }
+  });
+
+  // 「新建空间…」复用既有的新建弹窗（空间名 + 原生选目录）
+  wmNew.addEventListener("click", function () {
+    closeWMenu();
+    openSpaceNew();
+  });
+
+  // 点菜单外面关闭（mousedown 才赶在 click 改选别处之前收掉）
+  document.addEventListener("mousedown", function (e) {
+    if (!wMenu.classList.contains("open")) return;
+    if (wMenu.contains(e.target) || e.target === wSpace) return;
+    closeWMenu();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && wMenu.classList.contains("open")) closeWMenu();
+  });
 
   // ---- MCP 管理弹窗（mcp.json 原文编辑；保存后重启 agentd）----
   var mcpPane = document.getElementById("mcp-pane");

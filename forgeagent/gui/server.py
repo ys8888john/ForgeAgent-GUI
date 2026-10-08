@@ -710,6 +710,32 @@ class _Handler(BaseHTTPRequestHandler):
             picked = dialogs.pick_directory(initial)
             return self._json({"ok": True, "path": picked})
 
+        # ---- 按目录落地空间（幂等）：欢迎页「选择工作目录」用 ----
+        # 与 /api/space/new 的区别：目录已属于某个空间时直接激活它，不报重名错 ——
+        # 用户从对话框选的目录可能是之前建过的，重复创建没有意义。
+        if u.path == "/api/space/ensure":
+            path = body.get("path")
+            path = str(path).strip() if isinstance(path, str) else ""
+            if not path:
+                return self._fail(400, "缺少 path")
+            owner = self._owner
+            try:
+                name = owner.spaces.ensure_space_for_path(path)
+            except (ValueError, OSError) as exc:
+                return self._fail(400, str(exc))
+            sp = owner.spaces.resolve_path(name) or ""
+            owner.current_space_name = name
+            owner.current_space_dir = sp
+            bridge.set_cwd(sp)
+            return self._json(
+                {
+                    "ok": True,
+                    "space": {"name": name, "path": sp},
+                    "active": name,
+                    "spaces": owner.spaces.list_spaces(),
+                }
+            )
+
         # ---- 模式切换：转 bridge（session/set_mode，下一轮 prompt 生效）----
         if u.path == "/api/mode":
             return self._json(bridge.set_mode(str(body.get("mode_id") or "")))
