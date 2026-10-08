@@ -84,6 +84,63 @@
     transition: background .12s ease;
   }
   #sidebar-resizer:hover, #sidebar-resizer.dragging { background: var(--accent); }
+
+  /* ---- 新会话欢迎页（对标 WorkBuddy 的空状态）----
+     #messages 一个气泡都没有时铺欢迎页；用 body.empty-session 切换，
+     由 MutationObserver 自动同步（见 JS），不侵入任何消息渲染代码。 */
+  #welcome { display: none; }
+  body.empty-session #welcome {
+    display: flex; flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 24px 16px;
+  }
+  body.empty-session #messages,
+  body.empty-session #composer,
+  body.empty-session .hint { display: none; }
+  .w-title { font-size: 30px; font-weight: 700; letter-spacing: .5px; margin: 0; }
+  .w-cats { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .w-cat {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    font-size: 13px; padding: 7px 14px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  /* 激活 pill 用 text/bg 反色：不写死颜色，亮暗主题下都自动成立 */
+  .w-cat.active {
+    background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600;
+  }
+  .w-chips {
+    display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: 720px;
+  }
+  .w-chip {
+    display: inline-flex; align-items: center; cursor: pointer;
+    font-size: 12px; padding: 6px 12px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text-dim);
+  }
+  .w-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .w-box {
+    width: min(760px, 100%); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 16px;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, .10);
+    padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .w-box textarea {
+    border: none; outline: none; resize: none; background: transparent;
+    font-family: inherit; font-size: 14px; line-height: 1.6; color: var(--text);
+    min-height: 54px; max-height: 200px;
+  }
+  .w-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .w-meta {
+    display: flex; align-items: center; gap: 6px; font-size: 11px;
+    color: var(--text-dim); min-width: 0;
+  }
+  .w-meta .w-frag { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .w-sendbtn {
+    width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer;
+    background: var(--text); color: var(--bg); font-size: 15px; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .w-sendbtn:hover { opacity: .85; }
+  .w-sendbtn:disabled { opacity: .4; cursor: default; }
   #sidebar-head {
     display: flex; align-items: center; justify-content: space-between;
     padding: 10px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
@@ -545,6 +602,26 @@
     </header>
 
     <div id="messages"></div>
+
+    <!-- 新会话欢迎页（对标 WorkBuddy）：#messages 为空时由 body.empty-session 显示，
+         发出第一条消息自动退场。chips 只往输入框填模板，发送权在用户手里。 -->
+    <div id="welcome">
+      <h1 class="w-title">ForgeAgent，我帮你</h1>
+      <div class="w-cats" id="w-cats"></div>
+      <div class="w-chips" id="w-chips"></div>
+      <div class="w-box">
+        <textarea id="w-input" rows="2" placeholder="今天帮你做些什么？（Enter 发送，Shift+Enter 换行）"></textarea>
+        <div class="w-foot">
+          <div class="w-meta">
+            <span class="w-frag" id="w-space" title="当前空间">📁 …</span>
+          </div>
+          <div class="w-meta">
+            <span class="w-frag" id="w-model" title="当前模型（header 下拉可热切换）">…</span>
+            <button id="w-send" class="w-sendbtn" type="button" title="发送（Enter）">➤</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div id="composer">
       <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
@@ -1514,6 +1591,7 @@
       }
     }
     modelSelect.value = sel;
+    syncWelcomeMeta();  // 欢迎页底栏显示的模型名跟着刷新
   }
 
   modelSelect.addEventListener("change", function () {
@@ -2003,6 +2081,7 @@
         spaceSelect.appendChild(opt);
       });
       spaceSelect.title = "当前空间：" + (res.path || "");
+      syncWelcomeMeta();  // 欢迎页底栏显示的空间名跟着刷新
     } catch (e) { /* 不影响主流程 */ }
   }
 
@@ -2136,6 +2215,138 @@
       } catch (e) {}
     });
   })();
+
+  // ---- 新会话欢迎页（对标 WorkBuddy 的空状态）----
+  // #messages 一个气泡都没有时铺欢迎页；任何路径加进来的第一个气泡（流式 user
+  // 回显 / 错误气泡 / 历史渲染）一出现就自动退场 —— 用 MutationObserver 盯
+  // #messages，省得在十几处渲染代码里手工插开关。
+  var welcomeBox = document.getElementById("welcome");
+  var wInput = document.getElementById("w-input");
+  var wSendBtn = document.getElementById("w-send");
+  var wCats = document.getElementById("w-cats");
+  var wChips = document.getElementById("w-chips");
+  var wSpace = document.getElementById("w-space");
+  var wModel = document.getElementById("w-model");
+
+  // 场景分类 → 提示词模板。点 chip 只是把模板填进输入框，发送权在用户手里。
+  // 分类顺序照顾本项目的实际用户：写代码的、刷题的、其余日常。
+  var WELCOME_SETS = [
+    {
+      name: "编程开发", icon: "💻",
+      items: [
+        ["实现功能", "帮我实现一个功能："],
+        ["修 Bug", "帮我排查并修复这个 Bug，要求先给根因再给修法："],
+        ["代码讲解", "逐行讲解这段代码的逻辑："],
+        ["重构优化", "帮我重构这段代码，要求更简洁高效："],
+        ["写测试", "为下面的代码补单元测试："],
+        ["项目分析", "分析这个项目的结构，给出模块说明"],
+      ],
+    },
+    {
+      name: "算法学习", icon: "🧩",
+      items: [
+        ["讲思路", "讲讲这道算法题的解题思路："],
+        ["逐行解释", "逐行解释这份题解代码："],
+        ["复杂度分析", "分析这段代码的时间和空间复杂度："],
+        ["对比解法", "对比这几种解法的优劣："],
+        ["出题练习", "给我推荐一道 LeetCode 题目并附提示"],
+      ],
+    },
+    {
+      name: "日常问答", icon: "💬",
+      items: [
+        ["解释概念", "用通俗的例子解释这个概念："],
+        ["写文档", "帮我把下面的内容整理成文档："],
+        ["翻译", "把下面的内容翻译成中文："],
+        ["随便聊聊", "最近学到的东西想跟你聊聊："],
+      ],
+    },
+  ];
+  var wActiveCat = 0;
+
+  function renderWelcomeCats() {
+    wCats.innerHTML = "";
+    WELCOME_SETS.forEach(function (set, i) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "w-cat" + (i === wActiveCat ? " active" : "");
+      b.textContent = set.icon + " " + set.name;
+      b.addEventListener("click", function () {
+        if (wActiveCat !== i) {
+          wActiveCat = i;
+          renderWelcomeCats();
+          renderWelcomeChips();
+        }
+      });
+      wCats.appendChild(b);
+    });
+  }
+
+  function renderWelcomeChips() {
+    wChips.innerHTML = "";
+    WELCOME_SETS[wActiveCat].items.forEach(function (it) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "w-chip";
+      b.textContent = it[0];
+      b.title = it[1];
+      b.addEventListener("click", function () {
+        wInput.value = it[1];
+        wAutoSize();
+        wInput.focus();
+      });
+      wChips.appendChild(b);
+    });
+  }
+
+  function wAutoSize() {
+    wInput.style.height = "auto";
+    wInput.style.height = Math.min(wInput.scrollHeight, 200) + "px";
+  }
+  wInput.addEventListener("input", wAutoSize);
+
+  // 发送走主 composer 的 submit()，保持「单一发送路径」——欢迎页输入框只是
+  // 把文本搬进主输入框再触发，回调、busy 处理、错误气泡全都复用现成的。
+  function welcomeSubmit() {
+    if (busy || !started) return;
+    var text = wInput.value.trim();
+    if (!text) return;
+    input.value = text;
+    submit();
+    wInput.value = "";
+    wAutoSize();
+  }
+  wInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      welcomeSubmit();
+    }
+  });
+  wSendBtn.addEventListener("click", welcomeSubmit);
+
+  function syncWelcome() {
+    var empty = messages.children.length === 0;
+    document.body.classList.toggle("empty-session", empty);
+    if (empty) wInput.focus();
+  }
+  new MutationObserver(syncWelcome).observe(messages, { childList: true });
+
+  // 欢迎页底栏的空间 / 模型名：直接读 header 两个下拉的当前选中项，
+  // 由 loadSpaces / loadModels 在各自刷新后回调这里（函数声明提升，先引用没问题）。
+  function syncWelcomeMeta() {
+    var sp = (spaceSelect && spaceSelect.selectedOptions[0]) || null;
+    if (sp) {
+      var spName = (sp.textContent || "").replace(" ●", "").trim();
+      wSpace.textContent = "📁 " + spName;
+      wSpace.title = "当前空间：" + (sp.title || spName) + "（会话将绑定到该目录）";
+    }
+    var mo = (modelSelect && modelSelect.selectedOptions[0]) || null;
+    if (mo) wModel.textContent = "⚙ " + (mo.textContent || "").trim();
+  }
+
+  renderWelcomeCats();
+  renderWelcomeChips();
+  syncWelcome();
 
   // ---- MCP 管理弹窗（mcp.json 原文编辑；保存后重启 agentd）----
   var mcpPane = document.getElementById("mcp-pane");
