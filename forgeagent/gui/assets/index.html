@@ -251,6 +251,15 @@
   /* select 的 min-width 默认按最长 option 文本算、不可压缩 —— 挤压量必须由
      它们吸收。放开 min-width（保个 64px 下限）让空间/模型/模式三个下拉可缩。 */
   header > select { min-width: 64px; flex: 0 1 auto; }
+  /* 空间 / 模式两个下拉是浏览器 UA 默认样式：白底黑字方块，压在浅灰 header 上
+     特别跳。统一成灰底灰字，跟旁边 MCP / 模型管理 / agent 日志 几个按钮一个调子
+     ——全用主题变量，亮暗双主题自适应。模型下拉（#model-select）不在此列，它是
+     「当前模型」的主控件，保留原来的高对比度。 */
+  #space-select, #mode-select {
+    background: var(--bg-soft); color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 3px 6px; font-size: 12px; font-family: inherit;
+  }
   #status {
     display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 12px;
     flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap;
