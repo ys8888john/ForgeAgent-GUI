@@ -1590,16 +1590,6 @@
 
   // 打开窗口不再永远是"真空新会话"：若有历史会话，自动续接最近的一条
   // （走与手动点击完全相同的 resumeSession 路径 —— 历史重放 + session/load）。
-  async function maybeResumeLast() {
-    try {
-      var res = await api("/api/sessions");
-      var items = (res.sessions || []).filter(function (s) { return (s.msg_count || 0) > 0; });
-      if (items.length && !busy) {
-        await resumeSession(items[0].id);
-      }
-    } catch (e) { /* 静默失败：恢复不了就停在空会话，不影响使用 */ }
-  }
-
   async function loadSessions() {
     if (!started) return;
     try {
@@ -3063,8 +3053,7 @@
       } catch (e) {
         reportFatal("bootstrap", e);
       }
-      loadSessions();        // 把历史会话填进侧栏
-      maybeResumeLast();     // 有历史就自动续接最近一条（不阻塞后续 boot）
+      loadSessions();        // 把历史会话填进侧栏（可点选续接，但启动默认停在欢迎页，不自动续接）
       loadMcp();             // 侧栏底部显示 MCP 配置摘要
       loadModels();          // header 的模型下拉框
       loadSpaces();          // header 的空间下拉框
