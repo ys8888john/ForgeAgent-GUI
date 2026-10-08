@@ -662,6 +662,28 @@
   .cf-danger:hover { background: var(--danger-bg) !important; }
   .m-probe-out.bad { color: var(--danger); }
 
+  /* ---- Toast 轻提示（右下/底部居中，自动消失）----
+     用于「切模型成功」这类不需要用户决策的反馈：不抢焦点、不阻塞输入，
+     和原生 confirm 的区别是「告知」而不是「询问」。
+     z-index 高于弹窗(60)与确认框(95)：从模型弹窗里切换模型时，toast 也要看得见。 */
+  #toast-host {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    z-index: 100; display: flex; flex-direction: column; align-items: center;
+    gap: 8px; pointer-events: none;
+  }
+  .toast {
+    pointer-events: auto; cursor: pointer;
+    max-width: min(460px, calc(100vw - 40px));
+    padding: 10px 14px; border-radius: 10px;
+    background: var(--bg); border: 1px solid var(--border);
+    box-shadow: 0 8px 28px rgba(0,0,0,.18);
+    opacity: 0; transform: translateY(10px);
+    transition: opacity .18s ease, transform .18s ease;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .toast-detail { font-size: 12px; color: var(--text-dim); line-height: 1.5; margin-top: 3px; }
+
 </style>
 </head>
 <body>
@@ -844,6 +866,8 @@
     </div>
   </div>
 </div>
+
+<div id="toast-host"></div>
 
 <div id="ctx-menu">
   <div class="ctx-head" id="ctx-head"></div>
@@ -1694,15 +1718,9 @@
     var id = parts[0];
     var model = parts.slice(1).join("::");  // 模型名里一般不含 ::，合并兜底
     var labelText = (modelSelect.selectedOptions[0] || {}).textContent || "";
-    if (!window.confirm(id
-          ? "热切换到「" + labelText + "」？下一轮对话即用，不重启 agentd。"
-          : "切回默认配置？下一轮对话即用，不重启 agentd。")) {
-      loadModels();  // 撤销下拉框的选择
-      input.focus();  // 焦点还给输入框（取消切换也要顺手还）
-      return;
-    }
-    // window.confirm 会抢焦点、且可能让焦点残留在 <select> 上 → 切完「看似打不了字」。
-    // 先同步把焦点还回输入框，再兜底一次（网络往返完也还）。
+    // 不再弹确认框：热切换下一轮才生效、可随时改回，用 toast 告知足够。
+    // <select> 选完焦点会残留在下拉框上 → 切完「看似打不了字」，先同步还回输入框，
+    // 再兜底一次（网络往返完也还）。
     input.focus();
     api("/api/model/select", { method: "POST", body: { id: id, model: model } })
       .then(function (r) {
@@ -1714,6 +1732,8 @@
         // 成功即热切换：agentd 下一轮从热配置文件读新配置，无需重启，会话历史保留。
         // 刷新下拉框让它反映「当前选中的模型」，否则下拉框还停在上一个选项。
         loadModels();
+        showToast("已切换到 " + (labelText || model || "默认配置"),
+                  "对话中途更改模型可能降低性能，并可能增加积分消耗。");
       })
       .catch(function (e) { showErrorBubble("切换失败", String(e)); loadModels(); })
       .finally(function () { input.focus(); });
@@ -1933,13 +1953,15 @@
   }
 
   // 点二级模型行 -> 把该 provider 热切到这个模型（走和 header 下拉同一条 /api/model/select）。
+  // 不再弹确认框：热切换是「下一轮生效、可控」的操作，用 toast 告知即可 ——
+  // 原生 confirm 会抢输入框焦点、还得多点一次"确定"。
   function switchProfileModel(p, model) {
-    if (!window.confirm("把「" + p.name + "」切到模型 " + model + "？下一轮对话即用，不重启 agentd。")) return;
     api("/api/model/select", { method: "POST", body: { id: p.id, model: model } })
       .then(function (r) {
         if (!r.ok) { showErrorBubble("切换失败", r.error || "未知错误"); return; }
         loadModels();       // header 下拉读的是 models.json 的 env MODEL，跟着刷新
         renderModelList();  // 二级列表的「使用中」高亮也跟着挪
+        showToast("已切换到 " + model, "对话中途更改模型可能降低性能，并可能增加积分消耗。");
       })
       .catch(function (e) { showErrorBubble("切换失败", String(e)); });
   }
@@ -2261,6 +2283,44 @@
     var b = newBubble("error", label);
     appendText(b, text);
     b = null;
+  }
+
+  // ---- Toast 轻提示 ----
+  // 用于「切模型成功」这类只需告知、不需用户拍板的反馈：不抢焦点、不阻塞输入，
+  // 几秒后自动消失，点一下可立即关掉。比 window.confirm 更适合热切换 ——
+  // 原生框会抢走输入框焦点（切完"打不了字"就是这么来的），还得让用户多点一次"确定"。
+  function showToast(title, detail) {
+    var host = document.getElementById("toast-host");
+    if (!host) return null;
+    var t = document.createElement("div");
+    t.className = "toast";
+    var h = document.createElement("div");
+    h.className = "toast-title"; h.textContent = title || "";
+    t.appendChild(h);
+    if (detail) {
+      var d = document.createElement("div");
+      d.className = "toast-detail"; d.textContent = detail;
+      t.appendChild(d);
+    }
+    host.appendChild(t);
+    // 下一帧再加 .show，让 transition 有起始值（否则直接显示、没有动画）
+    requestAnimationFrame(function () { t.classList.add("show"); });
+    var timer = null;
+    var gone = false;
+    function dismiss() {
+      if (gone) return;
+      gone = true;
+      if (timer) clearTimeout(timer);
+      t.classList.remove("show");
+      t.addEventListener("transitionend", function () { if (t.parentNode) t.parentNode.removeChild(t); }, { once: true });
+      // 兜底：过渡事件没来（被隐藏/打断）也要清理，避免留在 DOM 里吃内存
+      setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 400);
+    }
+    t.addEventListener("click", dismiss);
+    timer = setTimeout(dismiss, 5000);
+    // 最多同时 3 条，超出先挤掉最旧的
+    while (host.children.length > 3) host.removeChild(host.firstChild);
+    return t;
   }
 
   document.getElementById("new-chat").addEventListener("click", newChat);
