@@ -273,8 +273,8 @@
     background: var(--bg-soft);
     flex: 0 0 auto;
     /* 兜底：极窄窗口下宁可裁掉 select 的尾巴，也不能把 header 里的项目挤出
-       #main 右边界 —— 那会给整个页面顶出一条横向滚动条（CDP 实测 theme-btn
-       越界 28px 就是这么来的）。正常宽度下这行不起作用。 */
+       #main 右边界 —— 那会给整个页面顶出一条横向滚动条（CDP 实测齿轮越界
+       28px 就是这么来的）。正常宽度下这行不起作用。 */
     overflow: hidden;
   }
   header h1 { font-size: 14px; font-weight: 600; margin: 0; flex: 0 0 auto; }
@@ -303,6 +303,30 @@
   #dot.error { background: var(--danger); }
   #dot.connecting { background: #e5a50a; }
   header .spacer { flex: 1; }
+  /* 设置菜单：把 MCP / 模型管理 / agent 日志 收进一个 ⚙ 里，header 不再堆按钮。
+     菜单挂在按钮下方右对齐，fixed 定位（JS 摆位），跟 #w-menu 一个路子。 */
+  #settings-menu {
+    position: fixed; z-index: 92; min-width: 210px; display: none;
+    flex-direction: column; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 10px 28px rgba(0, 0, 0, .16); padding: 6px;
+  }
+  #settings-menu.open { display: flex; }
+  #settings-btn { font-size: 14px; padding: 3px 9px; }
+  #settings-menu .sm-item {
+    display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+    font: inherit; font-size: 12px; color: var(--text); background: transparent;
+    border: none; cursor: pointer; padding: 7px 9px; border-radius: 6px;
+  }
+  #settings-menu .sm-item:hover { background: var(--bg-soft); }
+  #settings-menu .sm-icon { flex: 0 0 auto; width: 16px; text-align: center; }
+  #settings-menu .sm-name { flex: 1 1 auto; min-width: 0; }
+  #settings-menu .sm-hint {
+    flex: 0 0 auto; font-size: 10px; color: var(--text-dim);
+    max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #settings-menu .sm-sep {
+    height: 1px; background: var(--border); margin: 5px 4px;
+  }
   button {
     font-family: inherit; font-size: 12px; color: var(--text-dim);
     background: transparent; border: 1px solid var(--border);
@@ -751,11 +775,28 @@
       <select id="model-select" title="热切换模型（不重启 agentd，下一轮对话生效；当前会话保留）"></select>
       <span class="spacer"></span>
       <select id="mode-select" title="会话模式（下一轮起生效）" style="display:none"></select>
-      <button id="mcp-btn" title="编辑 mcp.json（保存并重启 agentd 生效）">MCP</button>
-      <button id="models-btn">模型管理</button>
-      <button id="log-btn">agent 日志</button>
-      <button id="theme-btn" title="切换 明亮 / 暗色 / 跟随系统">🌓</button>
+      <button id="settings-btn" title="设置：MCP 配置 / 模型管理 / agent 日志 / 主题">⚙</button>
     </header>
+
+    <!-- 设置菜单：点 ⚙ 弹出。MCP / 模型管理 / agent 日志 / 主题 四个入口收在这里，
+         header 只留一个齿轮（以前三个按钮平铺在右上，占宽且越挤越容易溢出）。 -->
+    <div id="settings-menu">
+      <button class="sm-item" id="sm-mcp" type="button">
+        <span class="sm-icon">🔌</span><span class="sm-name">MCP 配置</span>
+      </button>
+      <button class="sm-item" id="sm-models" type="button">
+        <span class="sm-icon">🧩</span><span class="sm-name">模型管理</span>
+      </button>
+      <button class="sm-item" id="sm-log" type="button">
+        <span class="sm-icon">📜</span><span class="sm-name">agent 日志</span>
+      </button>
+      <div class="sm-sep"></div>
+      <button class="sm-item" id="sm-theme" type="button">
+        <span class="sm-icon" id="sm-theme-icon">🌓</span>
+        <span class="sm-name">主题</span>
+        <span class="sm-hint" id="sm-theme-hint">跟随系统</span>
+      </button>
+    </div>
 
     <div id="messages"></div>
 
@@ -1716,7 +1757,6 @@
 
   var modelSelect = document.getElementById("model-select");
   var modelsPane = document.getElementById("models-pane");
-  var modelsBtn = document.getElementById("models-btn");
   var mEdit = document.getElementById("m-edit");
   var mList = document.getElementById("m-list");
   var editingId = null;   // 正在编辑的 profile id（null = 新增）
@@ -1820,7 +1860,7 @@
     mEdit.classList.remove("open");
     editingId = null;
   }
-  modelsBtn.addEventListener("click", openModels);
+  // 入口已挪到「设置」菜单（#sm-models）直接调用 openModels，不再绑按钮。
   document.getElementById("m-close").addEventListener("click", closeModels);
   modelsPane.addEventListener("click", function (e) {
     if (e.target === modelsPane) closeModels();
@@ -2900,7 +2940,9 @@
   // ---- MCP 管理弹窗（mcp.json 原文编辑；保存后重启 agentd）----
   var mcpPane = document.getElementById("mcp-pane");
   var mcpText = document.getElementById("mcp-text");
-  document.getElementById("mcp-btn").addEventListener("click", async function () {
+  // 抽成具名函数：入口从 header 的 MCP 按钮挪到「设置」菜单（#sm-mcp）后，
+  // 这里只留实现，菜单那侧直接调用，不靠"制造一个假点击"。
+  async function openMcpPane() {
     try {
       var res = await api("/api/mcp/raw");
       mcpText.value = res.text || "";
@@ -2911,7 +2953,7 @@
     } catch (e) {
       showErrorBubble("读取失败", String((e && e.message) || e));
     }
-  });
+  }
   document.getElementById("mcp-close").addEventListener("click", function () {
     mcpPane.classList.remove("open");
   });
@@ -3197,24 +3239,29 @@
   });
 
   // ---- 主题：亮 / 暗 / 跟随系统（三态循环，持久化 localStorage）----
+  // 入口从 header 的 🌓 按钮挪到「设置」菜单的「主题」行：那里除了图标还多一行
+  // 文字说明当前是哪种（跟随系统 / 暗色 / 明亮），比一个猜不出状态的月亮强。
   var THEME_KEY = "fg-theme";
-  var themeBtn = document.getElementById("theme-btn");
+  var smThemeIcon = document.getElementById("sm-theme-icon");
+  var smThemeHint = document.getElementById("sm-theme-hint");
+  function themeLabel(mode) {
+    return mode === "auto" ? "跟随系统" : mode === "dark" ? "暗色" : "明亮";
+  }
   var themeMode = localStorage.getItem(THEME_KEY) || "auto";
   function applyTheme(mode) {
     var systemDark =
       window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
     var dark = mode === "dark" || (mode === "auto" && systemDark);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
-    themeBtn.textContent = dark ? "☀️" : "🌙";
-    themeBtn.title = "主题：" + (mode === "auto" ? "跟随系统" : mode === "dark" ? "暗色" : "明亮") +
-      "（点击切换）";
+    if (smThemeIcon) smThemeIcon.textContent = dark ? "☀️" : "🌙";
+    if (smThemeHint) smThemeHint.textContent = themeLabel(mode);
   }
   applyTheme(themeMode);
-  themeBtn.addEventListener("click", function () {
+  function cycleTheme() {
     themeMode = themeMode === "dark" ? "light" : themeMode === "light" ? "auto" : "dark";
     localStorage.setItem(THEME_KEY, themeMode);
     applyTheme(themeMode);
-  });
+  }
   if (window.matchMedia) {
     var schemeMq = window.matchMedia("(prefers-color-scheme: dark)");
     if (schemeMq.addEventListener) {
@@ -3223,6 +3270,60 @@
       });
     }
   }
+
+  // ---- 设置菜单：点 header 的 ⚙ 弹出，四个入口（MCP / 模型管理 / agent 日志 / 主题）----
+  // 以前这四个是 header 右上平铺的按钮，窄窗口下会和左侧的空间/模型下拉抢宽度
+  // （header 的 overflow:hidden 兜底就是这么来的）。收进一个菜单后 header 只多一个
+  // 齿轮，右侧永远只占固定宽度。
+  var settingsMenu = document.getElementById("settings-menu");
+  var settingsBtn = document.getElementById("settings-btn");
+
+  function closeSettings() { settingsMenu.classList.remove("open"); }
+
+  function openSettings() {
+    var r = settingsBtn.getBoundingClientRect();
+    settingsMenu.style.top = (r.bottom + 6) + "px";
+    settingsMenu.style.left = "0px";
+    // 先显示再量宽：菜单 display:none 时 offsetWidth 恒为 0，右对齐会算错
+    // （会直接贴到按钮右沿而不是减掉菜单宽度）。先 open 拿到真实宽度，再摆位。
+    settingsMenu.classList.add("open");
+    var w = settingsMenu.offsetWidth || 210;
+    var left = r.right - w;   // 右对齐到齿轮右沿
+    settingsMenu.style.left =
+      Math.max(8, Math.min(left, window.innerWidth - w - 8)) + "px";
+  }
+
+  settingsBtn.addEventListener("click", function () {
+    if (settingsMenu.classList.contains("open")) closeSettings();
+    else openSettings();
+  });
+  // 点菜单外面关闭（mousedown 赶在 click 生效前收掉，与其它菜单一致）
+  document.addEventListener("mousedown", function (e) {
+    if (!settingsMenu.classList.contains("open")) return;
+    if (settingsMenu.contains(e.target) || e.target === settingsBtn) return;
+    closeSettings();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && settingsMenu.classList.contains("open")) closeSettings();
+  });
+
+  document.getElementById("sm-mcp").addEventListener("click", function () {
+    closeSettings();
+    openMcpPane();
+  });
+  document.getElementById("sm-models").addEventListener("click", function () {
+    closeSettings();
+    openModels();
+  });
+  document.getElementById("sm-log").addEventListener("click", function () {
+    closeSettings();
+    toggleLog();
+  });
+  document.getElementById("sm-theme").addEventListener("click", function () {
+    // 主题是循环切换，菜单不关：就地更新那行文字，方便连点试效果
+    cycleTheme();
+    openSettings();
+  });
 
   // 代码块复制（事件委托：renderMd 生成的按钮不需要逐个绑）
   document.addEventListener("click", function (e) {
@@ -3261,7 +3362,7 @@
     }
   }
 
-  document.getElementById("log-btn").addEventListener("click", toggleLog);
+  // 入口已挪到「设置」菜单（#sm-log）直接调用 toggleLog；这里只留关闭按钮。
   document.getElementById("log-close").addEventListener("click", toggleLog);
 
   autoSize();
