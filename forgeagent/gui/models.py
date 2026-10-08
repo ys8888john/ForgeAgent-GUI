@@ -6,7 +6,7 @@
     管理这几组变量、切换时带着它们重启 agentd 子进程 —— 协议、审批、
     工具循环全都不用动。将来 agentd 加新后端，GUI 自动就支持。
 
-存储：~/.forgeagent/models.json（跟 mcp.json 同目录，同样的读写约定）：
+存储：~/.agentd/gui/models.json（跟 mcp.json 同目录，同样的读写约定）：
 
     {
       "active": "zhipu-glm45air",
@@ -23,7 +23,7 @@
       ]
     }
 
-安全注意：文件里会有明文 API key —— 与 ~/.forgeagent/mcp.json、Agentd/.env
+安全注意：文件里会有明文 API key —— 与 ~/.agentd/gui/mcp.json、Agentd/.env
 同级同罪，都属「用户家目录里的本机私密配置」，不进任何仓库。
 """
 
@@ -35,7 +35,8 @@ import re
 import time
 from pathlib import Path
 
-_FORGE_DIR = ".forgeagent"
+from .paths import GUI_DIR
+
 _MODELS_FILE = "models.json"
 
 # 环境变量名的白名单：profile 只允许带 AGENTD_ 前缀的键。
@@ -51,7 +52,7 @@ _MAX_ENV_PER_PROFILE = 16
 
 
 def models_path() -> Path:
-    return Path.home() / _FORGE_DIR / _MODELS_FILE
+    return GUI_DIR / _MODELS_FILE
 
 
 def hotenv_path() -> Path:
@@ -61,7 +62,7 @@ def hotenv_path() -> Path:
     环境变量告诉它，GUI 负责设好）。切模型时 GUI 把选中的 profile 环境变量写进来，
     运行中的 agentd 下一轮即生效 —— 不用重启子进程。
     """
-    return Path.home() / _FORGE_DIR / "hotenv.json"
+    return GUI_DIR / "hotenv.json"
 
 
 def write_hotenv(env: dict) -> None:

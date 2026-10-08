@@ -5,7 +5,7 @@
   "[错误]"（工具层报错，不抛异常 —— 模型能读到并绕路）；
 - --allow-write：写语句生效并持久化；SELECT 仍被拒（让 run_query 干它的事）。
 
-存储文件钉在 tmp_path，不碰用户的 ~/.forgeagent。
+存储文件钉在 tmp_path，不碰用户的 ~/.agentd/gui。
 """
 
 from __future__ import annotations

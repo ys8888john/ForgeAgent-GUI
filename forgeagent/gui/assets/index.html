@@ -512,6 +512,8 @@
     <header>
       <h1>ForgeAgent</h1>
       <span id="status"><span id="dot"></span><span id="status-text">启动中…</span></span>
+      <select id="space-select" title="空间（工作目录）—— 切换后会话自动绑定到对应目录"></select>
+      <button id="space-new" title="新建空间（未指定目录则落在 ~/.agentd/spaces/ 下）">+空间</button>
       <select id="model-select" title="热切换模型（不重启 agentd，下一轮对话生效；当前会话保留）"></select>
       <span class="spacer"></span>
       <select id="mode-select" title="会话模式（下一轮起生效）" style="display:none"></select>
@@ -556,7 +558,7 @@
       <div class="m-box">
         <div class="m-title">模型配置</div>
         <div class="m-note">
-          每个配置 = 一组注入 agentd 的环境变量（AGENTD_*），存于 ~/.forgeagent/models.json。
+          每个配置 = 一组注入 agentd 的环境变量（AGENTD_*），存于 ~/.agentd/gui/models.json。
           后端可选：ollama / openai_compat / mimo / zhipu。切换即<b>热切换</b>（不重启 agentd，
           下一轮对话生效），当前会话历史保留。一个 provider 下可在「模型名」里用逗号填多个模型，会话内随时切换。
         </div>
@@ -1400,7 +1402,7 @@
   }
 
   // ---- 自定义模型：选择器 + 管理弹窗 ----
-  // profile = 一组 AGENTD_* 环境变量（存 ~/.forgeagent/models.json）。
+  // profile = 一组 AGENTD_* 环境变量（存 ~/.agentd/gui/models.json）。
   // env 值从后端来时已脱敏（头3尾3），编辑时留空 = 不改已有值 —— 所以
   // 脱敏串绝不能当新值写回，下面 saveModels 里有专门的清洗逻辑。
 
@@ -1749,6 +1751,7 @@
       setActive(id);
       setStatus("ready", "已载入会话 " + id.slice(0, 8) + "（可继续聊）");
       loadSessions();
+      loadSpaces();   // 续聊可能切回该会话原本归属的空间，下拉高亮要跟着变
       input.focus();
       report();
     } catch (e) {
@@ -1769,6 +1772,7 @@
       setActive(r.session);
       setStatus("ready", "新会话 " + (r.session || "").slice(0, 8));
       loadSessions();
+      loadSpaces();   // 新会话绑定到当前空间，刷新下拉高亮（必要时）
       input.focus();
       report();
     } catch (e) {
@@ -1933,6 +1937,62 @@
 
   document.getElementById("new-chat").addEventListener("click", newChat);
 
+  // ---- 空间（Space）下拉与新建：参考 WorkBuddy 的「空间」----
+  // 每个空间是一个具名工作目录；切换空间后新开/续聊的会话自动绑定到该目录。
+  var spaceSelect = document.getElementById("space-select");
+  var spaceNew = document.getElementById("space-new");
+
+  async function loadSpaces() {
+    if (!started) return;
+    try {
+      var res = await api("/api/spaces");
+      var spaces = res.spaces || [];
+      spaceSelect.innerHTML = "";
+      spaces.forEach(function (s) {
+        var opt = document.createElement("option");
+        opt.value = s.name;
+        // 路径作为 title，option 文本只显示空间名（太长会撑爆 header）
+        opt.textContent = s.name + (s.is_active ? " ●" : "");
+        opt.title = s.path || "";
+        if (s.is_active) opt.selected = true;
+        spaceSelect.appendChild(opt);
+      });
+      spaceSelect.title = "当前空间：" + (res.path || "");
+    } catch (e) { /* 不影响主流程 */ }
+  }
+
+  spaceSelect.addEventListener("change", async function () {
+    if (busy || !started) return;
+    var name = spaceSelect.value;
+    if (!name) return;
+    try {
+      var r = await api("/api/space/switch", { method: "POST", body: { name: name } });
+      if (!r.ok) { showErrorBubble("切换空间失败", r.error || "未知错误"); return; }
+      setStatus("ready", "已切换到空间 " + name);
+      loadSpaces();
+    } catch (e) {
+      showErrorBubble("切换空间失败", String(e && e.message ? e.message : e));
+    }
+  });
+
+  spaceNew.addEventListener("click", async function () {
+    if (busy || !started) return;
+    // 简洁优先：用浏览器原生 prompt 要空间名；想指定目录就填「绝对路径」，
+    // 否则落到 ~/.agentd/spaces/<名字>。后续可换成自定义弹窗。
+    var name = window.prompt("新建空间名称：", "");
+    if (!name) return;
+    name = name.trim();
+    if (!name) return;
+    try {
+      var r = await api("/api/space/new", { method: "POST", body: { name: name } });
+      if (!r.ok) { showErrorBubble("新建空间失败", r.error || "未知错误"); return; }
+      setStatus("ready", "已创建并进入空间 " + name);
+      loadSpaces();
+    } catch (e) {
+      showErrorBubble("新建空间失败", String(e && e.message ? e.message : e));
+    }
+  });
+
   // ---- MCP 管理弹窗（mcp.json 原文编辑；保存后重启 agentd）----
   var mcpPane = document.getElementById("mcp-pane");
   var mcpText = document.getElementById("mcp-text");
@@ -1953,7 +2013,7 @@
   });
 
   // 常用工具 chips。
-  // in_config=true = 已经在 ~/.forgeagent/mcp.json 里、agentd 已经加载，
+  // in_config=true = 已经在 ~/.agentd/gui/mcp.json 里、agentd 已经加载，
   // **此刻就能被模型调用**，不需要再点任何东西 —— 所以渲染成 <span> 状态标签，
   // 不是 button。写成 disabled 按钮会让人以为"还没生效、还得再按一下"。
   // 未添加的才是真按钮，点它走 POST /api/mcp/presets/add（写盘 + 重启 agentd）。
@@ -2331,6 +2391,7 @@
       maybeResumeLast();     // 有历史就自动续接最近一条（不阻塞后续 boot）
       loadMcp();             // 侧栏底部显示 MCP 配置摘要
       loadModels();          // header 的模型下拉框
+      loadSpaces();          // header 的空间下拉框
       pump();
     },
     function () {

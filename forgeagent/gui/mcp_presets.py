@@ -10,9 +10,9 @@
    —— 没有 uv/uvx；`npx` 那条路也被沙箱安全策略拦死（`npm view` 直接 ACCESS_DENIED）。
    所以改成：装进一个专用 venv，`command` 写它的解释器绝对路径，`args` 写 `-m <模块>`。
 
-2. **专用 venv（`~/.forgeagent/mcp-venv`）而不是项目 `.venv`。**
+2. **专用 venv（`~/.agentd/gui/mcp-venv`）而不是项目 `.venv`。**
    `mcp-server-fetch` 会拖进 httpx / readabilipy / markdownify / protego 一串依赖，
-   装进项目 venv 有和 GUI 自身依赖打架的风险（测试基线会飘）。放在 `~/.forgeagent/`
+   装进项目 venv 有和 GUI 自身依赖打架的风险（测试基线会飘）。放在 `~/.agentd/gui/`
    下，和 `mcp.json` 同一个目录，互相不干扰。
 
 3. **不提供 filesystem 预设。** agentd 的原生工具（read_file / glob / grep / write_file / edit）
@@ -35,7 +35,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-# 专用 venv 的目录名，放在 ~/.forgeagent/ 下（与 mcp.json 同级）
+from .paths import GUI_DIR
+
+# 专用 venv 的目录名，放在 ~/.agentd/gui/ 下（与 mcp.json 同级）
 DEFAULT_VENV_DIRNAME = "mcp-venv"
 
 # probe_args 里可以写这个占位符，verify 脚本会替换成"当前工作目录"
@@ -124,8 +126,14 @@ PRESETS: dict[str, Preset] = {
 
 
 def config_root(home: str | Path | None = None) -> Path:
-    """`~/.forgeagent`（和 mcp_config.config_path() 的默认目录保持一致）。"""
-    return (Path(home) if home is not None else Path.home()) / ".forgeagent"
+    """`~/.agentd/gui`（和 mcp_config.config_path() 的默认目录保持一致）。
+
+    ``home`` 仅测试用：给定时相对该目录解析（``<home>/.agentd/gui``），否则用
+    真实的 ``~/.agentd/gui``。
+    """
+    if home is not None:
+        return Path(home) / ".agentd" / "gui"
+    return GUI_DIR
 
 
 def venv_dir(home: str | Path | None = None) -> Path:

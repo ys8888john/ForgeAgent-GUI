@@ -124,14 +124,14 @@ python3 -m venv .venv
 | 变量 | 作用 | 默认 |
 |---|---|---|
 | `FORGEAGENT_AGENT_CMD` | 拉起 agent 的命令 | `sys.executable -m agentd.server` |
-| `FORGEAGENT_CWD` | agent 的工作目录 | 当前目录 |
+| `FORGEAGENT_CWD` | agent 的工作目录（显式 `--cwd` 传入时，会当成「空间」打开/创建并激活；不传则交给**空间系统**，默认 `~/.agentd/spaces/default`） | 当前目录 |
 | `AGENTD_LLM_BACKEND` | 透传给 agentd：`fake` / `script` / `ollama` / `openai_compat` | `ollama` |
 | `AGENTD_OLLAMA_MODEL` | 透传给 agentd | `auto`（见下） |
 | `AGENTD_OLLAMA_HOST` | 透传给 agentd | `http://localhost:11434` |
 | `AGENTD_SCRIPT_JSON` | 透传给 agentd：`script` 后端的回放脚本（端到端验证用） | 空 |
 | `AGENTD_TOOLS` | 透传给 agentd：原生工具范围 `native` / `read_only` / `off` | `native` |
 | `AGENTD_TOOLS_APPROVE` | 透传给 agentd：审批策略 `native` / `all` / `none` | `native` |
-| `FORGEAGENT_MCP_CONFIG` | MCP 配置文件位置 | `~/.forgeagent/mcp.json` |
+| `FORGEAGENT_MCP_CONFIG` | MCP 配置文件位置 | `~/.agentd/gui/mcp.json` |
 | `FORGEAGENT_GUI_MODE` | 前端载体：`electron` / `serve` | `electron` |
 | `FORGEAGENT_ADDITIONAL_DIRS` | 额外工作区目录（os.pathsep 分隔，发给 agentd 的 additionalDirectories；工具可用绝对路径访问） | 空 |
 | `FORGEAGENT_PYTHON` | electron 模式下拉起 Python 后端的解释器（由 `forgeagent-gui` 自动设为 `sys.executable`）| 系统 `python3` |
@@ -182,7 +182,7 @@ agent 侧自己连。
 }
 ```
 
-默认位置 `~/.forgeagent/mcp.json`（可用 `FORGEAGENT_MCP_CONFIG` 改）。文件不存在
+默认位置 `~/.agentd/gui/mcp.json`（可用 `FORGEAGENT_MCP_CONFIG` 改）。文件不存在
 就是"没配 MCP"，不会报错。侧栏底部会显示连了几个 server；`GET /api/mcp` 给出
 路径与名字列表。
 
@@ -205,7 +205,7 @@ python scripts/install_demo_mcp.py --write    # 备份已有的 → 写入 demo 
 ```
 
 它做的事：写一份**临时** `mcp.json`（指向 `examples/echo_mcp_server.py`，不动你
-`~/.forgeagent` 里的真配置）、把后端设成 `AGENTD_LLM_BACKEND=script` + 一段剧本
+`~/.agentd/gui` 里的真配置）、把后端设成 `AGENTD_LLM_BACKEND=script` + 一段剧本
 （第 1 步要调 `demo__echo`、第 2 步出正文）、把会话存储设成 memory（不写你的
 `~/.agentd`），然后照常起 GUI。发任意一句话就能看到一张**真的**工具卡片，
 输出是示例 MCP server 真的返回的。
@@ -252,9 +252,9 @@ python scripts/verify_local_mcp.py                      # 验证：真连一遍�
 
 - **memory / sqlite（自研 bundled，零依赖）**：随仓库分发
   `examples/memory_mcp_server.py`（工具 save/search/list/delete，存储
-  `~/.forgeagent/memory.json`）与 `examples/sqlite_mcp_server.py`
+  `~/.agentd/gui/memory.json`）与 `examples/sqlite_mcp_server.py`
   （工具 list_tables / describe_table / run_query / run_statement，默认库
-  `~/.forgeagent/sqlite.db`，编辑 mcp.json 的 args `--file` 指向任意库）。
+  `~/.agentd/gui/sqlite.db`，编辑 mcp.json 的 args `--file` 指向任意库）。
   不装包、离线可用，是"点了就能用"的两条预设。
   **sqlite 的安全模型**：默认只读（`mode=ro` 连接 + 只收 SELECT），传
   `--allow-write` 才能写；写工具不带只读声明，会走过 agentd 审批弹窗。
@@ -288,11 +288,11 @@ python scripts/verify_local_mcp.py                      # 验证：真连一遍�
 {
   "mcpServers": {
     "time": {
-      "command": "C:\\Users\\<you>\\.forgeagent\\mcp-venv\\Scripts\\python.exe",
+      "command": "C:\\Users\\<you>\\.agentd/gui\\mcp-venv\\Scripts\\python.exe",
       "args": ["-m", "mcp_server_time"]
     },
     "git": {
-      "command": "C:\\Users\\<you>\\.forgeagent\\mcp-venv\\Scripts\\python.exe",
+      "command": "C:\\Users\\<you>\\.agentd/gui\\mcp-venv\\Scripts\\python.exe",
       "args": ["-m", "mcp_server_git"],
       "env": { "PATH": "<git 目录>;<原来的 PATH>" }
     }
@@ -307,7 +307,7 @@ python scripts/verify_local_mcp.py                      # 验证：真连一遍�
 
 **为什么单独一个 venv。** `mcp-server-fetch` 会拖进 httpx / readabilipy / markdownify /
 protego 一串依赖；装进项目 `.venv` 有和 GUI 自身依赖打架的风险（测试基线会飘）。
-专用 venv 放在 `~/.forgeagent/mcp-venv`，和 `mcp.json` 同目录，互不干扰。
+专用 venv 放在 `~/.agentd/gui/mcp-venv`，和 `mcp.json` 同目录，互不干扰。
 
 **为什么没有 filesystem 预设。** agentd 的原生工具
 （`read_file`/`glob`/`grep`/`write_file`/`edit`）已经把本地文件操作覆盖了；
@@ -469,7 +469,7 @@ scripts/
   native_tools_e2e.py  原生工具端到端验证：--scenario files（默认，含 --deny 拒绝路径）
                        / --scenario web（联网搜索/抓取，离线跑本地假后端）
   demo_mcp_gui.py   一键开「能看见工具卡片」的 GUI（不用 Ollama；可选 --serve / --model）
-  install_demo_mcp.py  把示例 MCP server 写进 ~/.forgeagent/mcp.json（默认干跑）
+  install_demo_mcp.py  把示例 MCP server 写进 ~/.agentd/gui/mcp.json（默认干跑）
   install_local_mcp.py 一键装本地 MCP server（time/fetch/git）+ 写配置（默认干跑）
   verify_local_mcp.py  验证本地 MCP server：复用 agentd 的 McpHub 真连 + 真调探针
 tests/
@@ -572,7 +572,7 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   **启动即续接**：打开窗口自动续接最近一条有内容的会话（与手动点击同一条
   resume 路径），不再每次都停在"真空新会话"。
   **会话"删除"＝侧栏隐藏**：侧栏条目 hover 有 ×，确认后写
-  `~/.forgeagent/hidden_sessions.json` 移出列表 —— agentd 的库是它独占的
+  `~/.agentd/hidden_sessions.json` 移出列表 —— agentd 的库是它独占的
   写方，GUI 不碰；要真清数据用 `agentd/scripts/sessions.py`。隐藏 ≠ 删除：
   历史仍可查询，恢复显示删掉 hidden 文件即可。
   GUI 只读那一份 SQLite 库（另开 read-only 连接，WAL 并发读不冲突），不碰写方。
@@ -581,6 +581,19 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   `POST /api/mode`。
   **会话重命名**：右键会话条目 →「重命名…」，写本地别名（`session_aliases.json`），
   列表标题别名优先；留空提交即恢复自动标题。
+- **空间（Space）：参考 WorkBuddy 的「空间」概念** —— 每个空间是一个**具名工作目录**，
+  在某个空间下开的会话自动把 cwd 绑到该目录，agentd 的原生工具（读/写/检索/列目录）
+  就以它为根，多空间互不串门。
+  - 首次运行自动建 `default` 空间，目录 `~/.agentd/spaces/default`；注册表在
+    `~/.agentd/spaces.json`，会话→空间绑定在 `~/.agentd/session_spaces.json`
+    （续聊时按绑定还原 cwd，所以"重启后工具落在错目录"的坑也被顺带修掉）。
+  - 顶栏新增空间下拉框：`+空间` 新建（不指定目录则落到 `~/.agentd/spaces/<名字>`，
+    也可显式填一个绝对路径当作工作区），下拉切换即切换当前工作目录。切换空间**不重启**
+    agentd 子进程 —— cwd 是每次 `session/new` / `session/load` 请求里带过去的，改了
+    client 的 cwd，下一个新会话 / 续聊就落到新目录。
+  - 命令行 `forgeagent-gui --cwd /path/to/project` 等价于「打开名为 project 的空间」：
+    启动时把该目录落地成一个空间并激活；不传 `--cwd` 则走上面的默认空间系统。
+  - 后端接口：`GET /api/spaces`、`POST /api/space/new`、`POST /api/space/switch`。
 - **会话模式切换**：顶栏模式下拉（agent ↔ single），经 `session/set_mode`
   生效（下一轮 prompt 起新语义，agentd 响应里声明的取值为准）。agentd 未
   声明 modes（旧版本）时下拉框自动隐藏。agentd 切换后会广播

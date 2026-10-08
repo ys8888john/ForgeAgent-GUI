@@ -43,9 +43,9 @@ def test_python_bin_posix():
 
 
 def test_venv_dir_sits_next_to_config(tmp_path):
-    """专用 venv 要和 mcp.json 同一个目录（~/.forgeagent/），互相不干扰。"""
-    assert config_root(tmp_path) == tmp_path / ".forgeagent"
-    assert venv_dir(tmp_path) == tmp_path / ".forgeagent" / "mcp-venv"
+    """专用 venv 要和 mcp.json 同一个目录（~/.agentd/gui/），互相不干扰。"""
+    assert config_root(tmp_path) == tmp_path / ".agentd" / "gui"
+    assert venv_dir(tmp_path) == tmp_path / ".agentd" / "gui" / "mcp-venv"
 
 
 # ---------- 条目生成 ----------

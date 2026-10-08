@@ -36,8 +36,11 @@ const PROJECT_ROOT = path.resolve(__dirname, "..");
 // python 解释器：优先用外层（forgeagent-gui）传进来的，没传就退而求其次找系统 python3。
 // FORGEAGENT_PYTHON 由 forgeagent/gui/__main__.py 的 electron 分支设成 sys.executable（那个 venv 里有 agentd）。
 const PYTHON = process.env.FORGEAGENT_PYTHON || "python3";
-// agentd 的工作目录（用户项目），由 --cwd 传进来。
-const AGENTD_CWD = process.env.FORGEAGENT_CWD || process.cwd();
+// agentd 的工作目录（用户项目），由 --cwd 传进来。__main__.py 仅在用户显式给了
+// --cwd 时才设 FORGEAGENT_CWD；没给就留空 —— 此时后端走「空间（Space）」系统：
+// 默认空间 ~/.agentd/spaces/default，而不是把 Electron 进程自己的 cwd 当工作区。
+// （之前这里用 process.cwd() 兜底，会强行把启动目录塞成 cwd，让空间切换形同虚设。）
+const FORGE_CWD = process.env.FORGEAGENT_CWD || "";
 
 let pyProc = null;
 let win = null;
@@ -82,9 +85,12 @@ function saveWindowState() {
 // 拉起 `python -m forgeagent.gui --mode serve`，逐行读 stdout 抓 UI_READY <url>。
 function startBackend() {
   return new Promise((resolve, reject) => {
+    // 只在用户显式 --cwd 时才把工作目录传给后端；否则让空间系统接管（见上）。
+    const args = ["-m", "forgeagent.gui", "--mode", "serve"];
+    if (FORGE_CWD) args.push("--cwd", FORGE_CWD);
     pyProc = spawn(
       PYTHON,
-      ["-m", "forgeagent.gui", "--mode", "serve", "--cwd", AGENTD_CWD],
+      args,
       { cwd: PROJECT_ROOT, env: process.env, stdio: ["ignore", "pipe", "pipe"] }
     );
 

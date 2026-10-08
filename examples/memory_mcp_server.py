@@ -7,7 +7,7 @@
 
 与 agentd 原生工具的分界（刻意不重叠）：
     read_file/write_file 是"给用户改文件"的；这里是"给模型记事"的结构化
-    事实记忆库（标签 + 检索 + 全文），存储固定在 ~/.forgeagent/memory.json
+    事实记忆库（标签 + 检索 + 全文），存储固定在 ~/.agentd/gui/memory.json
     （可用 --file 覆盖），不碰用户的工作目录。
 
 运行（跟 echo_mcp_server.py 同一套姿势，都要能 import mcp —— 标准安装姿势下
@@ -137,8 +137,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="ForgeAgent 本地记忆 MCP server")
     ap.add_argument(
         "--file",
-        default=str(Path.home() / ".forgeagent" / "memory.json"),
-        help="存储文件（默认 ~/.forgeagent/memory.json）",
+        default=str(Path.home() / ".agentd" / "gui" / "memory.json"),
+        help="存储文件（默认 ~/.agentd/gui/memory.json）",
     )
     args = ap.parse_args()
     _state["file"] = args.file

@@ -6,7 +6,7 @@
     cd ForgeAgent-GUI && <Agentd venv 的 python> -m pytest tests/test_memory_mcp_server.py
 
 解释器需要装着 mcp SDK（agentd 的 venv 就有）；仓库不在（纯 GUI CI）
-整组 skip。存储文件钉在 tmp_path（--file），绝不碰用户的 ~/.forgeagent。
+整组 skip。存储文件钉在 tmp_path（--file），绝不碰用户的 ~/.agentd/gui。
 """
 
 from __future__ import annotations

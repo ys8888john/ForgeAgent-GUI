@@ -138,7 +138,22 @@ class Bridge:
         self._emit_modes()
         return {"ok": True, "session": sid}
 
-    def resume_session(self, session_id: str) -> dict:
+    def set_cwd(self, cwd: str) -> dict:
+        """把后续会话的工作目录切到 cwd（切换空间用）。
+
+        只改 client 的 ``_cwd``；它会在下一个 session/new / session/load 请求里
+        带过去，所以**不需要重启 agentd 子进程**。见 AcpClient.set_cwd。
+        """
+        if self._closed.is_set():
+            return {"ok": False, "error": "已关闭"}
+        setter = getattr(self._client, "set_cwd", None)
+        if callable(setter):
+            setter(cwd)
+        else:  # 老/精简版 client：直接戳字段
+            self._client._cwd = cwd
+        return {"ok": True, "cwd": cwd}
+
+    def resume_session(self, session_id: str, cwd: str | None = None) -> dict:
         """续聊一个已有会话：优先走 ACP session/load，旧 agentd 回退纯切换。
 
         **为什么要 load**：重启 GUI 后旧 sessionId 的历史在库里，但会话级配置
@@ -147,11 +162,16 @@ class Bridge:
         真正把配置绑回去；失败（老版本 agentd 回 -32601 等）退回旧姿势：只切
         sessionId（历史照常接上）。存在性校验在 server 层做（它握有只读视图），
         这里只管协议与切换。
+
+        ``cwd`` 可选：传了就先把 client 的工作目录切过去再 load，保证续聊出来的
+        工具 cwd 还原成该会话当初归属的空间目录（多空间互不串门）。
         """
         if self._closed.is_set():
             return {"ok": False, "error": "已关闭"}
         if not session_id:
             return {"ok": False, "error": "缺少 session_id"}
+        if cwd is not None:
+            self.set_cwd(cwd)
         self._client.session_id = session_id  # 先记上；load 成功后原样确认
         loaded = False
         load = getattr(self._client, "load_session", None)

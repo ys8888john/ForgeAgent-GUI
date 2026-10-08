@@ -295,6 +295,16 @@ class AcpClient:
         """
         self._env = dict(env) if env else None
 
+    def set_cwd(self, cwd: str) -> None:
+        """切换工作目录（下一轮 session/new 或 session/load 生效）。
+
+        注意：cwd 是**每次** session/new、session/load 请求里带过去的
+        （见 new_session / load_session），不是子进程启动后就焊死的。
+        所以切换空间不需要重启 agentd 子进程 —— 改了这里，下一个新会话
+        / 续聊就会落到新目录，旧会话的 cwd 仍是它自己创建时绑定的那份。
+        """
+        self._cwd = cwd or os.environ.get("FORGEAGENT_CWD") or os.getcwd()
+
     async def start(self) -> None:
         """拉起 agentd 并完成握手。失败会抛 AcpError。"""
         # 子进程环境：默认继承父进程的，但强制 stdout/stderr 走 UTF-8。

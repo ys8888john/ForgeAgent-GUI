@@ -14,7 +14,7 @@
 GUI 与 agentd 同 venv）：
 
     python examples/sqlite_mcp_server.py --file path/to/db.sqlite
-                                                 # 不传 --file 默认 ~/.forgeagent/sqlite.db
+                                                 # 不传 --file 默认 ~/.agentd/gui/sqlite.db
 
 工具：
     list_tables()                    表 + 视图清单（含 sqlite 内部表排除）
@@ -201,8 +201,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="ForgeAgent 本地 SQLite MCP server")
     ap.add_argument(
         "--file",
-        default=str(Path.home() / ".forgeagent" / "sqlite.db"),
-        help="数据库文件（默认 ~/.forgeagent/sqlite.db；编辑 mcp.json 可指向任意库）",
+        default=str(Path.home() / ".agentd" / "gui" / "sqlite.db"),
+        help="数据库文件（默认 ~/.agentd/gui/sqlite.db；编辑 mcp.json 可指向任意库）",
     )
     ap.add_argument("--allow-write", action="store_true", help="允许写语句（默认只读；写工具仍会走审批）")
     args = ap.parse_args()

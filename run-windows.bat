@@ -26,8 +26,10 @@ REM 前置条件（一次性）：WSL 里已装 Ollama，且拉好模型（如 q
 REM GUI 启动时会自动拉起停掉的 WSL（Ollama 靠 WSL 内 systemd 随发行区启动）。
 REM
 REM 用法：
-REM   run-windows.bat                以"当前目录"作为 agentd 工作目录
-REM   run-windows.bat D:\your\project  指定工作目录
+REM   run-windows.bat                以"当前目录"为一个空间（Space）打开
+REM   run-windows.bat D:\your\project  把指定目录作为一个空间打开
+REM 说明：显式 --cwd 会被当成空间打开/创建并激活；想用默认空间
+REM       (~/.agentd/spaces/default) 请用 forgeagent-gui --mode serve（不带 --cwd）。
 REM
 REM 想用 Electron 窗口（而非浏览器）：先把 electron/ 依赖装好
 REM （cd electron && npm install），再把下面 --mode serve 改成 --mode electron。

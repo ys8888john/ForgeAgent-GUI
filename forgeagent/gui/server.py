@@ -39,6 +39,7 @@ from .mcp_config import config_path, load_mcp_servers, save_config_dict
 from .mcp_presets import PRESETS, build_entries, merge_config, python_bin, repo_root, venv_dir
 from .models import env_for, load_models, models_path, sanitize_profile, save_models
 from .sessions import SessionsSource
+from .spaces import SpaceManager
 
 ASSETS = Path(__file__).parent / "assets"
 
@@ -370,8 +371,9 @@ class UiServer:
         port: int = 0,
         sessions: SessionsSource | None = None,
         mcp_servers: list[dict] | None = None,
+        spaces: SpaceManager | None = None,
     ) -> None:
-        # MCP server 配置：默认从 ~/.forgeagent/mcp.json 读（没有就是空），
+        # MCP server 配置：默认从 ~/.agentd/gui/mcp.json 读（没有就是空），
         # 在 session/new 时交给 agentd。
         self.mcp_servers = load_mcp_servers() if mcp_servers is None else mcp_servers
         # **启动时应用 active 模型 profile**：models.json 里记着"当前用哪个
@@ -382,7 +384,7 @@ class UiServer:
         # /api/model/select 的热切换写的是同一个文件。
         active = load_models().get("active")
         self.models_env = _route_wsl_ollama(env_for(active), active)
-        # 告诉 agentd 去哪读热配置（GUI 自己管理的 ~/.forgeagent/hotenv.json）。
+        # 告诉 agentd 去哪读热配置（GUI 自己管理的 ~/.agentd/gui/hotenv.json）。
         # 设到本进程环境里，这样每次 spawn 子进程（含 MCP 改动触发的重启）
         # 都会自动带上，不会在重启后丢掉。
         self.hotenv_path = _models.hotenv_path()
@@ -399,9 +401,25 @@ class UiServer:
         self._wsl_keepalive = _WslKeepalive()
         if active and "wsl" in str(active).lower():
             self._wsl_keepalive.start()
+        # ---- 空间（Space）：参考 WorkBuddy 的「空间」----
+        # 每个空间是一个具名工作目录；在某个空间下开会话，会话就自动绑定到它的
+        # 目录（cwd），agentd 的原生工具以该目录为根。多空间互不串门。
+        #
+        # cwd 优先级：
+        #   1) 显式传了 cwd（用户 --cwd / FORGEAGENT_CWD）→ 把它落地成一个空间并激活
+        #      （找不到就按目录名建一个）。这样「forgeagent-gui --cwd /p/project」
+        #      就等于「打开名为 project 的空间」。
+        #   2) 没传 → 用持久化的 active 空间目录（首次运行 = ~/.agentd/spaces/default）。
+        # 注意：Electron 壳只有在用户显式给了 --cwd 时才会往后端传 cwd（main.js 改过），
+        # 所以正常双击启动走的是第 2 条，即空间系统说了算。
+        self.spaces = spaces if spaces is not None else SpaceManager()
+        if cwd:
+            self.spaces.ensure_space_for_path(cwd)
+        self.current_space_name = self.spaces.active_name
+        self.current_space_dir = self.spaces.active_path()
         # 不再把 profile env 注入子进程：agentd 改从热文件读（见上）。
         self.bridge = bridge if bridge is not None else Bridge(
-            cwd=cwd, command=command, mcp_servers=self.mcp_servers, env=None
+            cwd=self.current_space_dir, command=command, mcp_servers=self.mcp_servers, env=None
         )
         # 会话库只读视图：默认读 agentd 的 SQLite（~/.agentd/sessions.db）。
         # 测试可注入假的，完全不碰磁盘。
@@ -605,10 +623,81 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._fail(400, "缺少 session_id")
             if not self._owner.sessions.exists(sid):
                 return self._fail(404, f"没有这个会话: {sid}")
+            # 还原该会话归属的空间：按 session_spaces.json 查出原空间目录，
+            # 切到那个空间（同时改 active，让 header 高亮跟着变），再把 cwd 带进
+            # load_session —— 续聊出来的工具 cwd 就落回正确的目录。
+            owner = self._owner
+            space_name = owner.spaces.space_of(sid)
+            if space_name:
+                sp = owner.spaces.resolve_path(space_name)
+                if sp:
+                    try:
+                        owner.spaces.set_active(space_name)
+                    except ValueError:
+                        pass
+                    owner.current_space_name = space_name
+                    owner.current_space_dir = sp
+                    return self._json(bridge.resume_session(sid, cwd=sp))
             return self._json(bridge.resume_session(sid))
 
         if u.path == "/api/session/new":
-            return self._json(bridge.new_session())
+            r = bridge.new_session()
+            if r.get("ok"):
+                owner = self._owner
+                sid = r.get("session")
+                if sid:
+                    owner.spaces.bind(sid, owner.current_space_name)
+                r["space"] = {
+                    "name": owner.current_space_name,
+                    "path": owner.current_space_dir,
+                }
+            return self._json(r)
+
+        # ---- 空间（Space）：新建 / 切换 ----
+        # 参考 WorkBuddy 的「空间」：每个空间一个具名工作目录，会话归属空间后
+        # 自动把 cwd 绑到那个目录。新建完自动进入（切 active + 改后续会话 cwd）。
+        if u.path == "/api/space/new":
+            name = str(body.get("name") or "").strip()
+            path = body.get("path")  # 可选：用户显式指定目录；留空则放 ~/.agentd/spaces/<name>
+            path = str(path).strip() if isinstance(path, str) else None
+            if not name:
+                return self._fail(400, "缺少空间名")
+            try:
+                created = self._owner.spaces.add_space(name, path=path)
+            except (ValueError, OSError) as exc:
+                return self._fail(400, str(exc))
+            owner = self._owner
+            owner.spaces.set_active(created["name"])
+            owner.current_space_name = created["name"]
+            owner.current_space_dir = created["path"]
+            bridge.set_cwd(created["path"])
+            return self._json(
+                {
+                    "ok": True,
+                    "space": created,
+                    "active": created["name"],
+                    "spaces": owner.spaces.list_spaces(),
+                }
+            )
+
+        if u.path == "/api/space/switch":
+            name = str(body.get("name") or "").strip()
+            sp = self._owner.spaces.resolve_path(name)
+            if sp is None:
+                return self._fail(404, f"没有这个空间: {name}")
+            owner = self._owner
+            owner.spaces.set_active(name)
+            owner.current_space_name = name
+            owner.current_space_dir = sp
+            bridge.set_cwd(sp)
+            return self._json(
+                {
+                    "ok": True,
+                    "active": name,
+                    "path": sp,
+                    "spaces": owner.spaces.list_spaces(),
+                }
+            )
 
         # ---- 模式切换：转 bridge（session/set_mode，下一轮 prompt 生效）----
         if u.path == "/api/mode":
@@ -641,8 +730,8 @@ class _Handler(BaseHTTPRequestHandler):
 
         # ---- 模型：自定义 profile 管理 / 切换 ----
         # profile = 一组注入 agentd 的 AGENTD_* 环境变量（存
-        # ~/.forgeagent/models.json）。切换 = 把选中 profile 的 env 写进
-        # **热配置文件**（~/.forgeagent/hotenv.json），运行中 agentd 下一轮
+        # ~/.agentd/gui/models.json）。切换 = 把选中 profile 的 env 写进
+        # **热配置文件**（~/.agentd/gui/hotenv.json），运行中 agentd 下一轮
         # 对话即生效，**不重启子进程**（会话历史 / 工具循环 / MCP 全保留）。
         # ---- MCP 配置原文保存（管理弹窗）----
         # 校验到"能安全写回"即可：字段级校验是 agentd 的 MCP SDK 的职责，
@@ -849,6 +938,17 @@ class _Handler(BaseHTTPRequestHandler):
         # 注意：/api/session/new 和 /api/session/resume 是 POST，不在这里处理。
         if path == "/api/sessions":
             return self._json({"ok": True, "sessions": self._owner.sessions.list_meta()})
+
+        # ---- 空间（Space）：当前激活空间 + 全部空间列表（header 下拉框用）----
+        if path == "/api/spaces":
+            return self._json(
+                {
+                    "ok": True,
+                    "active": self._owner.current_space_name,
+                    "path": self._owner.current_space_dir,
+                    "spaces": self._owner.spaces.list_spaces(),
+                }
+            )
 
         if path.startswith("/api/session/"):
             sid = path[len("/api/session/"):]

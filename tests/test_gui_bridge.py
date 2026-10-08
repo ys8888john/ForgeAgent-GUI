@@ -51,6 +51,8 @@ class _FakeClient:
         self.load_calls: list[str] = []
         self.set_mode_calls: list[str] = []
         self.set_mcp_calls: list[list[dict]] = []
+        self.set_cwd_calls: list[str] = []
+        self._cwd = ""
         # 会话模式声明（None = 模拟旧 agentd，没声明 modes）
         self.modes = modes
 
@@ -79,6 +81,10 @@ class _FakeClient:
 
     def set_mcp_servers(self, servers):
         self.set_mcp_calls.append(list(servers))
+
+    def set_cwd(self, cwd: str) -> None:
+        self.set_cwd_calls.append(cwd)
+        self._cwd = cwd
 
     async def new_session(self) -> str:
         # 给 Bridge.new_session 用的假实现：记下一个新 id 即可

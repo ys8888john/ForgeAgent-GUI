@@ -39,7 +39,7 @@ DEMO_SCRIPT = [
 
 
 def write_mcp_json(tmp: Path) -> Path:
-    """写一份临时 mcp.json（不动你 ~/.forgeagent 里的真配置）。"""
+    """写一份临时 mcp.json（不动你 ~/.agentd/gui 里的真配置）。"""
     cfg = {
         "mcpServers": {
             "demo": {

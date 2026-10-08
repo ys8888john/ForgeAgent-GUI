@@ -24,13 +24,15 @@ import json
 import os
 from pathlib import Path
 
+from .paths import GUI_DIR
+
 
 def config_path() -> Path:
-    """配置文件位置：FORGEAGENT_MCP_CONFIG 优先，否则 ~/.forgeagent/mcp.json。"""
+    """配置文件位置：FORGEAGENT_MCP_CONFIG 优先，否则 ~/.agentd/gui/mcp.json。"""
     override = os.environ.get("FORGEAGENT_MCP_CONFIG")
     if override:
         return Path(override)
-    return Path.home() / ".forgeagent" / "mcp.json"
+    return GUI_DIR / "mcp.json"
 
 
 def _as_pairs(raw: object) -> list[dict]:

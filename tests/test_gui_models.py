@@ -21,7 +21,7 @@ from forgeagent.gui.server import UiServer
 
 @pytest.fixture(autouse=True)
 def _tmp_home(tmp_path, monkeypatch):
-    """把 ~/.forgeagent 指到临时目录，绝不碰用户真实配置。"""
+    """把 ~/.agentd/gui 指到临时目录，绝不碰用户真实配置。"""
     monkeypatch.setattr(M, "models_path", lambda: tmp_path / "models.json")
     monkeypatch.setattr(M, "hotenv_path", lambda: tmp_path / "hotenv.json")
     yield
