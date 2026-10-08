@@ -3192,6 +3192,13 @@
       clearPending();
       // 换角色就换一个气泡：正文 / 思考 / 错误分开显示，别糊在一起
       var want = ev.role;
+      // 纯空白的 delta 不值得开新气泡：GLM 会在"思考段结束→工具调用"之间
+      // 发一个只有 "\n" 的正文 delta，照常建气泡就是界面上一颗空白药丸
+      // （2026-10-08 实测）。只跳过"新建"；已有同角色气泡时照常 append，
+      // 词句间的空格换行是正文的一部分，不能丢。
+      if (!(ev.text || "").trim() && (!current || current.dataset.role !== want)) {
+        return;
+      }
       if (!current || current.dataset.role !== want) {
         // 角色从 thought 切走 = 这一段思考完了，收尾并自动折叠
         if (current && current.dataset.role === "thought") finishThought(current);
