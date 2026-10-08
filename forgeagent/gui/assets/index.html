@@ -144,6 +144,39 @@
   /* 底栏的目录 chip 可点：hover 给出「能按」的暗示 */
   #w-space { cursor: pointer; border-radius: 6px; padding: 2px 6px; max-width: 280px; }
   #w-space:hover { background: var(--bg-soft); color: var(--text); }
+  /* 底栏的模型 chip 同样可点：点开一个向上展开的模型菜单（复用 /api/model/select）。
+     以前它只是个只读指示（没有 cursor/hover），用户自然会以为"这里能切"却点不动。 */
+  #w-model { cursor: pointer; border-radius: 6px; padding: 2px 6px; max-width: 220px; }
+  #w-model:hover { background: var(--bg-soft); color: var(--text); }
+  /* 模型菜单（点 #w-model 弹出，向上展开，与 #w-menu 同款定位） */
+  #wm-model-menu {
+    position: fixed; z-index: 92; min-width: 240px; max-width: 340px; display: none;
+    flex-direction: column; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 10px 28px rgba(0, 0, 0, .16);
+    padding: 6px; max-height: 320px; overflow-y: auto;
+  }
+  #wm-model-menu.open { display: flex; }
+  #wm-model-menu .wmm-head {
+    font-size: 11px; color: var(--text-dim); padding: 4px 8px 6px;
+  }
+  #wm-model-menu .wmm-item {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    font: inherit; font-size: 12px; color: var(--text); background: transparent;
+    border: none; cursor: pointer; padding: 7px 8px; border-radius: 6px;
+  }
+  #wm-model-menu .wmm-item:hover { background: var(--bg-soft); }
+  #wm-model-menu .wmm-item.active { cursor: default; }
+  #wm-model-menu .wmm-item.active:hover { background: transparent; }
+  #wm-model-menu .wmm-dot {
+    flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--border);
+  }
+  #wm-model-menu .wmm-item.active .wmm-dot { background: var(--ok); }
+  #wm-model-menu .wmm-name {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #wm-model-menu .wmm-cur { flex: 0 0 auto; font-size: 10px; color: var(--ok); }
   /* 工作目录选择菜单（点 #w-space 弹出，向上展开） */
   #w-menu {
     position: fixed; z-index: 92; min-width: 260px; max-width: 360px; display: none;
@@ -739,7 +772,7 @@
             <span class="w-frag" id="w-space" title="当前空间">📁 …</span>
           </div>
           <div class="w-meta">
-            <span class="w-frag" id="w-model" title="当前模型（header 下拉可热切换）">…</span>
+            <span class="w-frag" id="w-model" title="点这里切换模型（与顶部下拉等价）">…</span>
             <button id="w-send" class="w-sendbtn" type="button" title="发送（Enter）">➤</button>
           </div>
         </div>
@@ -753,6 +786,12 @@
       <div class="wm-sep"></div>
       <button class="wm-item" id="wm-pick" type="button">📂 选择其他目录…</button>
       <button class="wm-item" id="wm-new" type="button">＋ 新建空间…</button>
+    </div>
+
+    <!-- 模型选择菜单：点欢迎页底栏的 ⚙ 模型名弹出（走和 header 下拉同一条 /api/model/select） -->
+    <div id="wm-model-menu">
+      <div class="wmm-head">切换模型（热切换，不重启 agentd）</div>
+      <div id="wmm-list"></div>
     </div>
 
     <div id="composer">
@@ -2651,7 +2690,11 @@
       wSpace.title = "当前空间：" + (sp.title || spName) + "（会话将绑定到该目录）";
     }
     var mo = (modelSelect && modelSelect.selectedOptions[0]) || null;
-    if (mo) wModel.textContent = "⚙ " + (mo.textContent || "").trim();
+    if (mo) {
+      var moName = (mo.textContent || "").trim();
+      wModel.textContent = "⚙ " + moName;
+      wModel.title = "当前模型：" + moName + "（点这里切换）";
+    }
   }
 
   renderWelcomeCats();
@@ -2756,6 +2799,102 @@
   });
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && wMenu.classList.contains("open")) closeWMenu();
+  });
+
+  // ---- 欢迎页底栏的模型菜单：点 ⚙ 模型名弹出 ----
+  // 之前欢迎页的模型名只是**只读指示**（点不动），唯一能切模型的地方是顶部那条
+  // header 下拉 —— 用户会以为底栏这里能切（目录 chip 就能点），结果是"切换模型
+  // 没反应"。这里补上：菜单列出的就是 header 下拉里的同一个模型集合，点了走
+  // 同一条 /api/model/select，并复用 change 处理里那套确认 + toast + 刷新。
+  var wmModelMenu = document.getElementById("wm-model-menu");
+  var wmmList = document.getElementById("wmm-list");
+
+  function closeWmModelMenu() { wmModelMenu.classList.remove("open"); }
+
+  // 菜单项 = header 下拉当前可见的选项。多模型 profile 摊成 optgroup，这里
+  // 展平后每项仍带 `provider::model` 的 value，跟下拉的取值格式完全一致。
+  function openWmModelMenu() {
+    if (busy || !started) return;
+    wmmList.innerHTML = "";
+    var cur = modelSelect ? modelSelect.value : "";
+    var hasOpts = false;
+    Array.prototype.forEach.call(modelSelect.children, function (child) {
+      var group = null;
+      if (child.tagName === "OPTGROUP") {
+        group = child.label || "";
+        Array.prototype.forEach.call(child.children, function (o) { add(o, group); });
+      } else if (child.tagName === "OPTION") {
+        add(child, "");
+      }
+    });
+
+    function add(opt, group) {
+      if (!opt || opt.disabled) return;
+      hasOpts = true;
+      var isCur = opt.value === cur;
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "wmm-item" + (isCur ? " active" : "");
+      if (group) b.title = group;
+
+      var dot = document.createElement("span");
+      dot.className = "wmm-dot";
+
+      var name = document.createElement("span");
+      name.className = "wmm-name";
+      // 单模型 profile 的选项文案是「名字 · 模型」，二级菜单里 group 已经分担了
+      // provider 信息，这里保留完整文案（跟 header 下拉所见即所得）。
+      name.textContent = (opt.textContent || "").trim() || opt.value;
+      name.title = name.textContent;
+
+      b.appendChild(dot);
+      b.appendChild(name);
+      if (isCur) {
+        var cu = document.createElement("span");
+        cu.className = "wmm-cur";
+        cu.textContent = "当前";
+        b.appendChild(cu);
+      }
+      if (!isCur) {
+        b.addEventListener("click", function () {
+          if (busy || !started) return;
+          closeWmModelMenu();
+          // 直接复刻 header 下拉 change 的处理：把 value 写回下拉再派发 change，
+          // 这样确认框 / toast / loadModels 刷新只有一份实现，不会两条路径走偏。
+          modelSelect.value = opt.value;
+          modelSelect.dispatchEvent(new Event("change"));
+        });
+      }
+      wmmList.appendChild(b);
+    }
+
+    if (!hasOpts) {
+      var none = document.createElement("div");
+      none.className = "wmm-head";
+      none.textContent = "（没有可切换的模型，请先在「模型管理」里配置）";
+      wmmList.appendChild(none);
+    }
+
+    var rect = wModel.getBoundingClientRect();
+    wmModelMenu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 340)) + "px";
+    wmModelMenu.style.top = "auto";
+    wmModelMenu.style.bottom = (window.innerHeight - rect.top + 6) + "px";
+    wmModelMenu.classList.add("open");
+  }
+
+  wModel.addEventListener("click", function () {
+    if (wmModelMenu.classList.contains("open")) closeWmModelMenu();
+    else openWmModelMenu();
+  });
+
+  // 点菜单外面 / 按 Esc 关闭（与目录菜单同一套做法）
+  document.addEventListener("mousedown", function (e) {
+    if (!wmModelMenu.classList.contains("open")) return;
+    if (wmModelMenu.contains(e.target) || e.target === wModel) return;
+    closeWmModelMenu();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && wmModelMenu.classList.contains("open")) closeWmModelMenu();
   });
 
   // ---- MCP 管理弹窗（mcp.json 原文编辑；保存后重启 agentd）----
