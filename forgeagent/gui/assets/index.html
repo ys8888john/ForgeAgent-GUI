@@ -392,11 +392,22 @@
     font-size: 12px; padding: 3px 6px; max-width: 220px;
     border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
   }
-  #models-pane, #mcp-pane {
+  #models-pane, #mcp-pane, #space-new-pane {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35);
     z-index: 60; align-items: center; justify-content: center;
   }
-  #models-pane.open, #mcp-pane.open { display: flex; }
+  #models-pane.open, #mcp-pane.open, #space-new-pane.open { display: flex; }
+  /* 新建空间弹窗：空间名 + 目录（目录用原生对话框选，也允许手改） */
+  #space-new-pane .sn-row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+  #space-new-pane .sn-row label { font-size: 12px; color: var(--text-dim); width: 64px; flex: 0 0 auto; }
+  #space-new-pane .sn-input {
+    flex: 1 1 0; min-width: 0; font-size: 12px; padding: 6px 8px;
+    border: 1px solid var(--border); border-radius: 6px; font-family: var(--mono);
+  }
+  #space-new-pane .sn-pick {
+    flex: 0 0 auto; font-size: 12px; padding: 6px 10px; white-space: nowrap;
+  }
+  #space-new-pane .sn-err { color: var(--danger); font-size: 11px; min-height: 14px; margin-bottom: 8px; }
   .m-textarea {
     width: 100%; font-family: var(--mono); font-size: 12px; line-height: 1.5;
     border: 1px solid var(--border); border-radius: 6px; padding: 8px; resize: vertical;
@@ -618,6 +629,30 @@
     <div class="m-actions m-foot">
       <button id="cf-ok" type="button">确定</button>
       <button id="cf-cancel" type="button">取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="space-new-pane">
+  <div class="m-box" style="width:min(560px,calc(100vw - 48px))">
+    <div class="m-title">新建空间</div>
+    <div class="m-note">
+      空间 = 一个具名工作目录。在这个空间下开会话，会话就自动绑定到该目录，agent 的文件操作以它为根。
+      不填目录则落在 <span style="font-family:var(--mono)">~/.agentd/spaces/&lt;空间名&gt;</span>。
+    </div>
+    <div class="sn-row">
+      <label for="sn-name">空间名</label>
+      <input id="sn-name" class="sn-input" placeholder="如 project-x" maxlength="64" autocomplete="off">
+    </div>
+    <div class="sn-row">
+      <label for="sn-path">目录</label>
+      <input id="sn-path" class="sn-input" placeholder="留空 = ~/.agentd/spaces/<空间名>（可手动填绝对路径）" autocomplete="off">
+      <button id="sn-pick" class="sn-pick" type="button">选择目录…</button>
+    </div>
+    <div class="sn-err" id="sn-err"></div>
+    <div class="m-actions m-foot">
+      <button id="sn-create" type="button">创建并进入</button>
+      <button id="sn-cancel" type="button">取消</button>
     </div>
   </div>
 </div>
@@ -1975,22 +2010,75 @@
     }
   });
 
-  spaceNew.addEventListener("click", async function () {
-    if (busy || !started) return;
-    // 简洁优先：用浏览器原生 prompt 要空间名；想指定目录就填「绝对路径」，
-    // 否则落到 ~/.agentd/spaces/<名字>。后续可换成自定义弹窗。
-    var name = window.prompt("新建空间名称：", "");
-    if (!name) return;
-    name = name.trim();
-    if (!name) return;
+  // ---- 新建空间弹窗：对标 WorkBuddy 的「选择目录」原生体验 ----
+  // 用系统原生文件夹对话框选目录（/api/pick-directory 在后端调起），也允许手动改路径。
+  var snPane = document.getElementById("space-new-pane");
+  var snName = document.getElementById("sn-name");
+  var snPath = document.getElementById("sn-path");
+  var snErr = document.getElementById("sn-err");
+  var snPick = document.getElementById("sn-pick");
+  var snCreate = document.getElementById("sn-create");
+  var snCancel = document.getElementById("sn-cancel");
+
+  function openSpaceNew() {
+    snErr.textContent = "";
+    snName.value = "";
+    snPath.value = "";
+    snPane.classList.add("open");
+    snName.focus();
+  }
+  function closeSpaceNew() {
+    snPane.classList.remove("open");
+  }
+
+  snPick.addEventListener("click", async function () {
+    snErr.textContent = "";
+    snPick.disabled = true;
     try {
-      var r = await api("/api/space/new", { method: "POST", body: { name: name } });
-      if (!r.ok) { showErrorBubble("新建空间失败", r.error || "未知错误"); return; }
+      var initial = snPath.value.trim() || undefined;
+      var r = await api("/api/pick-directory", { method: "POST", body: { initial: initial } });
+      var p = (r && r.path) || null;
+      if (p) {
+        snPath.value = p;
+        // 用户还没填名字时，用目录名自动预填（去掉末尾分隔符）
+        if (!snName.value.trim()) {
+          var base = (p || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+          if (base) snName.value = base;
+        }
+      }
+      // path 为 null = 用户取消或环境无对话框：保持手动输入，不报错
+    } catch (e) {
+      // 选目录失败不阻断：用户仍可手填路径
+      snErr.textContent = "打开目录选择框失败，可手动填写路径";
+    } finally {
+      snPick.disabled = false;
+    }
+  });
+
+  snCreate.addEventListener("click", async function () {
+    var name = snName.value.trim();
+    if (!name) { snErr.textContent = "请填写空间名"; snName.focus(); return; }
+    var path = snPath.value.trim() || null;
+    snCreate.disabled = true;
+    try {
+      var r = await api("/api/space/new", { method: "POST", body: { name: name, path: path } });
+      if (!r.ok) { snErr.textContent = (r.error || "新建空间失败"); return; }
+      closeSpaceNew();
       setStatus("ready", "已创建并进入空间 " + name);
       loadSpaces();
     } catch (e) {
-      showErrorBubble("新建空间失败", String(e && e.message ? e.message : e));
+      snErr.textContent = String(e && e.message ? e.message : e);
+    } finally {
+      snCreate.disabled = false;
     }
+  });
+
+  snCancel.addEventListener("click", closeSpaceNew);
+  snPane.addEventListener("click", function (e) { if (e.target === snPane) closeSpaceNew(); });
+
+  spaceNew.addEventListener("click", function () {
+    if (busy || !started) return;
+    openSpaceNew();
   });
 
   // ---- MCP 管理弹窗（mcp.json 原文编辑；保存后重启 agentd）----

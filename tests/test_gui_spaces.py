@@ -16,6 +16,7 @@ import json
 import pytest
 from pathlib import Path
 
+from forgeagent.gui import dialogs
 from forgeagent.gui.bridge import Bridge
 from forgeagent.gui.server import UiServer
 from forgeagent.gui.spaces import SpaceManager
@@ -182,5 +183,29 @@ def test_space_new_rejects_duplicate_and_empty(tmp_path):
         _post_expecting_error(srv, {"name": "dup"})
         # 空名应 400
         _post_expecting_error(srv, {"name": ""})
+    finally:
+        srv.stop()
+
+
+def test_pick_directory_returns_picked(tmp_path, monkeypatch):
+    """/api/pick-directory 把对话框结果透传回来；取消返回 path=null 不报错。"""
+    srv = _server_with_spaces(tmp_path)
+
+    def fake_pick(initial):
+        # initial 透传给对话框，确认前端把当前输入目录传下去了
+        assert initial == "/some/start"
+        return "/some/start/sub"
+
+    monkeypatch.setattr(dialogs, "pick_directory", fake_pick)
+    try:
+        res = srv.client().post("/api/pick-directory", {"initial": "/some/start"})
+        assert res["ok"] is True
+        assert res["path"] == "/some/start/sub"
+
+        # 取消 / 无对话框：path 为 None，仍 ok
+        monkeypatch.setattr(dialogs, "pick_directory", lambda initial: None)
+        res2 = srv.client().post("/api/pick-directory", {"initial": None})
+        assert res2["ok"] is True
+        assert res2["path"] is None
     finally:
         srv.stop()

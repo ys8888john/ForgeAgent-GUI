@@ -40,6 +40,7 @@ from .mcp_presets import PRESETS, build_entries, merge_config, python_bin, repo_
 from .models import env_for, load_models, models_path, sanitize_profile, save_models
 from .sessions import SessionsSource
 from .spaces import SpaceManager
+from . import dialogs
 
 ASSETS = Path(__file__).parent / "assets"
 
@@ -698,6 +699,16 @@ class _Handler(BaseHTTPRequestHandler):
                     "spaces": owner.spaces.list_spaces(),
                 }
             )
+
+        # ---- 原生文件夹选择对话框（对标 WorkBuddy 的「选择目录」）----
+        # 后端是 Python 进程（Electron 壳 / serve 模式共用同一份），所以对话框由这侧
+        # 用系统原生控件调起，不依赖 Electron 的 node 桥。取消 / 无可用对话框一律返回
+        # {ok:true, path:null}，前端退化成「手动填路径」，不抛异常。
+        if u.path == "/api/pick-directory":
+            initial = body.get("initial")
+            initial = str(initial).strip() if isinstance(initial, str) else None
+            picked = dialogs.pick_directory(initial)
+            return self._json({"ok": True, "path": picked})
 
         # ---- 模式切换：转 bridge（session/set_mode，下一轮 prompt 生效）----
         if u.path == "/api/mode":
