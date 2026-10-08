@@ -384,6 +384,13 @@
     white-space: pre-wrap; word-break: break-word;
     max-height: 240px; overflow: auto;
   }
+  /* 工具卡片折叠：仿 Thinking 块。搜索/抓取类（web_search/web_fetch）完成后默认
+     折叠成一个小条，点 header 展开、再点收起；其余工具默认展开、也可手动折叠。
+     inline style.display 在产出输出时被置空（""），所以折叠交给 class 控制，
+     不会和初始的 display:none 打架。 */
+  .tool-caret { margin-left: 8px; font-size: 10px; transition: transform 0.15s; }
+  .bubble.tool.collapsed .tool-caret { transform: rotate(-90deg); }
+  .bubble.tool.collapsed .tool-out { display: none; }
 
   .bubble p { margin: 0 0 8px; }
   .bubble p:last-child { margin-bottom: 0; }
@@ -1141,6 +1148,12 @@
     el.dataset.userToggled = "1";
   }
 
+  // 工具卡片折叠：与 Thinking 同款交互（点 header 展开/收起，记住用户的选择）
+  function toggleTool(card) {
+    card.classList.toggle("collapsed");
+    card.dataset.userToggled = "1";
+  }
+
   // 思考结束：摘掉 streaming（脉冲停），折叠，除非用户自己开过
   function finishThought(el) {
     if (!el) return;
@@ -1360,6 +1373,8 @@
     pending: "等待中", in_progress: "运行中", completed: "完成",
     failed: "失败", cancelled: "已取消",
   };
+  // 完成后默认折叠的工具类型：搜索/抓取结果往往很长，先收起来，想看再点开
+  var AUTO_COLLAPSE_KINDS = { search: 1, fetch: 1 };
 
   function upsertTool(ev) {
     var id = ev.id || "";
@@ -1376,22 +1391,37 @@
       var st = document.createElement("span");
       st.className = "tool-status";
       head.appendChild(name); head.appendChild(kind); head.appendChild(st);
+      var caret = document.createElement("span");
+      caret.className = "tool-caret";
+      caret.textContent = "▾";
+      head.appendChild(caret);
+      head.style.cursor = "pointer";
+      head.title = "点击展开 / 折叠工具结果";
+      head.addEventListener("click", function () { toggleTool(card); });
       var out = document.createElement("div");
       out.className = "tool-out";
       out.style.display = "none";
       card.appendChild(head); card.appendChild(out);
-      card._name = name; card._kind = kind; card._st = st; card._out = out;
+      card._name = name; card._kind = kind; card._st = st; card._out = out; card._caret = caret;
       messages.appendChild(card);
       if (id) toolCards[id] = card;
     }
     if (ev.title) card._name.textContent = ev.title;
     card._kind.textContent = TOOL_KIND_LABEL[ev.kind] || ev.kind || "工具";
+    if (ev.kind) card._kindVal = ev.kind;  // 缓存：done 事件可能不带 kind，折叠判定要用
     card._st.textContent = TOOL_STATUS_LABEL[ev.status] || ev.status || "";
     card.classList.remove("running", "done", "failed", "cancelled");
     if (ev.status === "failed") card.classList.add("failed");
     else if (ev.status === "cancelled") card.classList.add("cancelled");
     else if (ev.status === "completed") card.classList.add("done");
     else card.classList.add("running");
+    // 完成/失败/取消后：搜索、抓取类结果默认折叠（除非用户自己展开过）
+    if (
+      (ev.status === "completed" || ev.status === "failed" || ev.status === "cancelled") &&
+      AUTO_COLLAPSE_KINDS[card._kindVal] && card.dataset.userToggled !== "1"
+    ) {
+      card.classList.add("collapsed");
+    }
     if (ev.output) {
       if (ev.kind === "edit" && /^[-+]/m.test(ev.output)) {
         renderDiffOutput(card._out, ev.output);
