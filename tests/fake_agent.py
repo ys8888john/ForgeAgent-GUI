@@ -123,6 +123,25 @@ for line in sys.stdin:
                 },
             )
 
+        if "大帧" in prompt_text:
+            # 回归用例（2026-10-08 真实事故）：一帧超过 64KB 的 session_update。
+            # 客户端 asyncio 默认单行读入上限就是 64KB，超了会打死读帧任务、
+            # 误报「agent 进程已退出」。正文 200KB，必须完整收到才算修好。
+            big = "X" * 200_000
+            notify(
+                "session/update",
+                {
+                    "sessionId": sid,
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": big},
+                    },
+                },
+            )
+            result = {"stopReason": "end_turn"}
+            send({"jsonrpc": "2.0", "id": mid, "result": result})
+            continue
+
         for chunk in ("你", "好", "世", "界"):
             notify(
                 "session/update",

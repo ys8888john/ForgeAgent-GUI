@@ -67,6 +67,10 @@ def _parse_additional_dirs(raw: str | None) -> list[str]:
             out.append(str(p))
     return out
 STDERR_LIMIT = 500  # 环形缓冲上限，防止长时间跑把内存吃满
+# stdout 单帧（一行 JSON-RPC）的读入上限。agentd 的 session_update 会把整个
+# 工具输出塞进一帧（web_fetch 一篇文章几百 KB 很正常），asyncio 默认 64KB
+# 会把读帧任务打死 —— 详见 start() 里的注释。acp SDK 同位置默认 50MB。
+_STDIO_FRAME_LIMIT = 64 * 1024 * 1024
 PERMISSION_TIMEOUT = 300.0  # 审批等这么久还没人答就按拒绝回帧（见 PermissionRequest）
 
 
@@ -316,6 +320,13 @@ class AcpClient:
         if self._env:
             child_env.update(self._env)
         child_env["PYTHONIOENCODING"] = "utf-8"
+        # limit：stdout 单行（= 单帧 JSON-RPC）的读入上限。asyncio 默认 64KB，
+        # 而 agentd 的一个 session_update 帧里会塞整个工具输出 —— web_fetch 一篇
+        # 微信文章就是几百 KB，64KB 上限一超，readline() 直接抛超限异常把读帧
+        # 任务打死，GUI 端误报「agent 进程已退出」（agentd 本人还活得好好的）。
+        # acp 官方 SDK 的 stdio 默认就是 50MB（DEFAULT_STDIO_BUFFER_LIMIT_BYTES），
+        # 注释原话："64KB is not large enough for multimodal use-cases"。
+        # 这里取 64MB，与 SDK 对齐再留余量。
         self._proc = await asyncio.create_subprocess_exec(
             *self._command,
             cwd=self._cwd,
@@ -323,6 +334,7 @@ class AcpClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,  # 必须捕获，见模块 docstring 第 2 条
             env=child_env,
+            limit=_STDIO_FRAME_LIMIT,
         )
         self._reader = asyncio.create_task(self._read_stdout())
         self._stderr_reader = asyncio.create_task(self._read_stderr())
@@ -657,6 +669,7 @@ class AcpClient:
         没有 method = 对方给我的响应。
         """
         assert self._proc is not None and self._proc.stdout is not None
+        crashed: BaseException | None = None
         try:
             while True:
                 line = await self._proc.stdout.readline()
@@ -687,11 +700,24 @@ class AcpClient:
                     await self._notifications.put(msg)
         except asyncio.CancelledError:
             return
+        except Exception as exc:  # noqa: BLE001 - 读帧循环崩了：把真因记下来
+            # 踩过的坑：asyncio 默认单行 64KB，agentd 的大帧（web_fetch 整页正文）
+            # 会在这里抛超限异常 —— 进程其实活着，错误信息却一直是误导人的
+            # 「agent 进程已退出」。limit 已放大（见 start()），这里兜底留证据。
+            crashed = exc
+            self._log(f"[致命] stdout 读帧循环崩溃：{type(exc).__name__}: {exc}")
         finally:
+            alive = self._proc is not None and self._proc.returncode is None
+            if crashed is not None and alive:
+                reason = f"与 agent 的连接中断（读帧循环崩溃：{type(crashed).__name__}，进程还活着）"
+            elif alive:
+                reason = "与 agent 的连接异常关闭（进程还在，stdout 先断了）"
+            else:
+                reason = "agent 进程已退出"
             # 进程没了就让所有等待者立刻失败，别傻等超时
             for fut in self._pending.values():
                 if not fut.done():
-                    fut.set_exception(AcpError("agent 进程已退出"))
+                    fut.set_exception(AcpError(reason))
             self._pending.clear()
             # 待审批的也一并结掉：没人会再点那个弹窗了
             for perm in list(self._permissions.values()):

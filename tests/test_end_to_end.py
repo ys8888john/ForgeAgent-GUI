@@ -50,6 +50,22 @@ async def test_stop_reason_is_captured(client: AcpClient):
     assert turns[-1].running is False
 
 
+async def test_big_frame_over_64kb_is_received_intact(client: AcpClient):
+    """单帧超过 64KB 的 session_update 必须完整收到（2026-10-08 真实事故回归）。
+
+    事故：GUI spawn agentd 时没设 StreamReader limit（asyncio 默认单行 64KB），
+    web_fetch 抓回一篇微信文章（几百 KB 打成一行 JSON-RPC）直接把读帧任务
+    打死 —— agentd 活得好好的、连最终答案都落了库，GUI 却报
+    「AcpError: agent 进程已退出」，用户什么都看不到。
+    修复：create_subprocess_exec 显式 limit=64MB（acp SDK 同位置默认 50MB）。
+    """
+    turns = [t async for t in client.prompt("给我来个大帧")]
+    assert turns[-1].stop_reason == "end_turn"
+    assert turns[-1].error == ""
+    assert len(turns[-1].text) == 200_000
+    assert set(turns[-1].text) == {"X"}
+
+
 async def test_stderr_is_captured_not_leaked(client: AcpClient):
     # 日志必须进缓冲，不能打到终端（Textual 会因此撕裂界面）
     assert any("fake-agent" in line for line in client.stderr_lines)
