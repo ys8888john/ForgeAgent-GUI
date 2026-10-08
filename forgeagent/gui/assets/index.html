@@ -1160,6 +1160,28 @@
     statusText.textContent = text;
   }
 
+  // 一轮结束时给顶栏写的那句话。以前非 cancelled 的分支是 `"stop=" + ev.stop`，
+  // 于是正常说完一轮，顶栏会显示 `stop=end-turn` 这种协议内部的枚举值
+  // （2026-10-08 用户截图里就是它）。这里翻成人话：正常收尾就回到"已连接"。
+  // 拉平后的停止原因（end_turn / cancelled / error / …），各处判断都用它，
+  // 免得"这里认 end_turn、那里认 end-turn"对不上。
+  function stopKey(ev) {
+    var raw = ev && (ev.stop || ev.stopReason || ev.stop_reason);
+    return String(raw || "").trim().toLowerCase().replace(/[- ]/g, "_");
+  }
+
+  function stopLabel(ev) {
+    if (ev && ev.error) return "出错了（看日志）";
+    var s = stopKey(ev);
+    if (!s || s === "undefined" || s === "end_turn") return "已连接";
+    if (s === "cancelled") return "已停止生成";
+    if (s === "error") return "出错了（看日志）";
+    if (s === "max_tokens") return "已达长度上限（被截断）";
+    if (s === "max_turn_requests") return "已达轮次上限";
+    if (s === "refusal") return "模型拒绝回答";
+    return "已结束（" + raw + "）";  // 未知枚举：包一层，别裸奔
+  }
+
   // 把「生成中」状态同步到侧栏（生成时禁点，防历史写乱）
   function setBusy(v) {
     busy = v;
@@ -3127,7 +3149,7 @@
       for (var ti = 0; ti < streamingThinks.length; ti++) {
         finishThought(streamingThinks[ti]);
       }
-      if (ev.stop === "cancelled") {
+      if (stopKey(ev) === "cancelled") {
         // 内核在工具边界收尾时，来不及完成的调用不会再有 ToolCallDone；
         // 卡片不能永远"运行中"。中断轮里所有还在跑的卡片一并收成「已取消」
         // —— 用户主动的选择，跟红色"失败"不是一回事（虚线灰边）。
@@ -3142,10 +3164,7 @@
       }
       setBusy(false);
       sendBtn.disabled = false;
-      setStatus(
-        "ready",
-        ev.error ? "出错了（看日志）" : (ev.stop === "cancelled" ? "已停止生成" : "stop=" + (ev.stop || "?"))
-      );
+      setStatus("ready", stopLabel(ev));
       input.focus();
       report();
       loadSessions();  // 本轮落库了，侧栏里这个新会话该出现了
