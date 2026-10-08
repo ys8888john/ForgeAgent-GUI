@@ -1970,7 +1970,17 @@
     // 而且"改一个配置只动一个字段"时，看不见当前值最容易误设。
     document.getElementById("m-maxctx").value = env["AGENTD_MAX_CONTEXT_TOKENS"] || "";
     document.getElementById("m-maxout").value = env["AGENTD_MAX_OUTPUT_TOKENS"] || "";
+    revealEditForm();
+  }
+
+  // 展开编辑区。弹窗内容（说明 + 列表）常比可视区高，编辑区落在折叠线以下时就「看着像
+  // 点了没反应」—— 主动把它滚进视野（block:"end" 保证底部的「模型名」和保存按钮也露出来），
+  // 并聚焦「模型名」方便直接输入。
+  function revealEditForm() {
     mEdit.classList.add("open");
+    try { mEdit.scrollIntoView({ block: "end", behavior: "auto" }); }
+    catch (e) { mEdit.scrollIntoView(false); }
+    try { document.getElementById("m-model").focus({ preventScroll: true }); } catch (e) {}
   }
 
   function deleteModel(id) {
@@ -1991,7 +2001,7 @@
      "m-maxctx", "m-maxout"].forEach(function (id) {
       document.getElementById(id).value = "";
     });
-    mEdit.classList.add("open");
+    revealEditForm();
   });
 
   document.getElementById("m-cancel").addEventListener("click", function () {
