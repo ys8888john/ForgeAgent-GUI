@@ -86,8 +86,11 @@
   }
   #sidebar-head #new-chat:hover { background: #e8f0fe; }
   #mode-select { max-width: 120px; font-size: 12px; padding: 3px 6px; }
+  /* overflow-x: hidden 兜住横向滚动条 —— 只有纵向滚动才是这里该有的行为。
+     光靠子项的 min-width:0 还不够：万一将来又往行里加了会撑宽的元素，
+     列表会静默多出一条横向滚动条（上一版就是这样，被截图抓出来的）。 */
   #session-list {
-    flex: 1 1 auto; overflow-y: auto; padding: 8px;
+    flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 8px;
     display: flex; flex-direction: column; gap: 6px;
   }
   .si-empty { color: var(--text-dim); font-size: 12px; padding: 12px 6px; }
@@ -95,17 +98,39 @@
     text-align: left; width: 100%; background: transparent;
     border: 1px solid transparent; border-radius: 8px; padding: 8px 10px;
     cursor: pointer; display: flex; flex-direction: column; gap: 3px;
+    /* align-items: stretch 必须显式写，因为它踩在 button 的 UA 默认样式上。
+       <button> 的 UA 样式里有 align-items: flex-start（按钮对齐内容的传统行为），
+       即使把它设成 flex 容器，这条依然压过 flex 容器默认的 stretch —— 于是子项
+       在横向按【内容宽度】收缩而不是撑满容器，超长标题就把元素自己撑宽
+       （实测容器 229px、标题 390px），text-overflow 永远不触发。
+       只加 min-width:0 不够，必须同时把交叉轴的对齐掰回 stretch。 */
+    align-items: stretch;
+    min-width: 0;
   }
   .session-item:hover { background: #eceef1; }
   .session-item.active { background: #e8f0fe; border-color: var(--user-border); }
+  /* min-width: 0 是 ellipsis 生效的前提，不是可选调优。
+     .si-title / .si-preview 是 flex 纵向容器（.session-item）里的子项，而 flex
+     子项的 min-width 默认是 auto —— 意思是"不许压到比内容的最小宽度还窄"。于是
+     超长标题会让元素被内容撑宽（实测行宽 229px，标题被撑到 390px、预览 576px），
+     元素自己根本没在溢出，text-overflow: ellipsis 自然一次都不触发；症状是文字
+     被外层 #session-list 硬切一刀、连省略号都没有，整个列表还多出横向滚动条。 */
   .si-title {
     font-size: 13px; font-weight: 600; color: var(--text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0;
   }
-  .si-meta { display: flex; gap: 8px; font-size: 11px; color: var(--text-dim); }
+  /* 时间 / 条数这一行同样要能收缩：侧栏窄或时间串长（"10 小时前"）时
+     不让它把行撑宽。min-width:0 + ellipsis 一起给上。 */
+  .si-meta {
+    display: flex; gap: 8px; font-size: 11px; color: var(--text-dim);
+    min-width: 0; overflow: hidden;
+  }
+  .si-meta span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .si-preview {
     font-size: 12px; color: var(--text-dim);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0;
   }
   #sidebar-foot {
     padding: 8px 12px; border-top: 1px solid var(--border);
