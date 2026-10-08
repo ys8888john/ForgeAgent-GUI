@@ -662,12 +662,14 @@
   .cf-danger:hover { background: var(--danger-bg) !important; }
   .m-probe-out.bad { color: var(--danger); }
 
-  /* ---- Toast 轻提示（右下/底部居中，自动消失）----
+  /* ---- Toast 轻提示（顶部居中、自动消失）----
      用于「切模型成功」这类不需要用户决策的反馈：不抢焦点、不阻塞输入，
      和原生 confirm 的区别是「告知」而不是「询问」。
+     放**顶部**而不是底部：底部紧挨输入框（#composer），弹出来会正好压住打字的地方。
+     top 取 56px = header(~41px) 之下，避开顶栏的模型下拉/按钮；多条向下堆叠。
      z-index 高于弹窗(60)与确认框(95)：从模型弹窗里切换模型时，toast 也要看得见。 */
   #toast-host {
-    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    position: fixed; left: 50%; top: 56px; transform: translateX(-50%);
     z-index: 100; display: flex; flex-direction: column; align-items: center;
     gap: 8px; pointer-events: none;
   }
@@ -677,7 +679,7 @@
     padding: 10px 14px; border-radius: 10px;
     background: var(--bg); border: 1px solid var(--border);
     box-shadow: 0 8px 28px rgba(0,0,0,.18);
-    opacity: 0; transform: translateY(10px);
+    opacity: 0; transform: translateY(-10px);   /* 从上方滑下来 */
     transition: opacity .18s ease, transform .18s ease;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
@@ -2303,8 +2305,11 @@
       t.appendChild(d);
     }
     host.appendChild(t);
-    // 下一帧再加 .show，让 transition 有起始值（否则直接显示、没有动画）
-    requestAnimationFrame(function () { t.classList.add("show"); });
+    // 先强制一次 reflow 把初始态（opacity:0 / 上移 10px）落盘，再加 .show 触发过渡。
+    // 不能用 requestAnimationFrame：窗口被遮挡/后台时 rAF 会被 Chromium 节流不触发，
+    // .show 就永远加不上，toast 停在透明态 —— 看起来就是「切了没提示」。
+    void t.offsetWidth;
+    t.classList.add("show");
     var timer = null;
     var gone = false;
     function dismiss() {
