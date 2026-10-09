@@ -40,6 +40,11 @@ def test_session_artifact_tray_wired_and_reset():
     assert "function trayRegister" in raw
     assert "function resetTray" in raw
     assert "function ensureTray" in raw
+    # 注册产物后必须把托盘翻回可见（ensureTray 建节点时是 display:none）。
+    # 2026-10-09 实锤：删展开列表时把显示切换弄丢了，托盘计数走到 1、
+    # 胶囊却永远 display:none。两个注册分支都要调 showTray。
+    assert "function showTray" in raw
+    assert raw.count("showTray()") >= 2
     # 切会话的两处（renderHistory / newChat）都必须清托盘；新一轮开始的
     # 防御性 toolCards 重置不能清（产物跨回合累积）。
     assert raw.count("resetTray()") >= 2

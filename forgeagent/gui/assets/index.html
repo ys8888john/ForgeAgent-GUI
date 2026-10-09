@@ -1793,12 +1793,21 @@
       if (idx >= 0) trayOrder.splice(idx, 1);
       trayOrder.push(p);
       ensureTray();
+      showTray();
       return;
     }
     artifacts[p] = true;
     trayOrder.push(p);
     ensureTray();
+    showTray();
     trayCount.textContent = String(trayOrder.length);
+  }
+
+  // 托盘只要有产物就必须可见。ensureTray 建节点时是 display:none（空托盘
+  // 不该露出一个 "(0)"），这里负责翻回来 —— 2026-10-09 真机首跑实锤：重设计
+  // 删展开列表时把显示切换弄丢了，托盘注册成功却永远 display:none。
+  function showTray() {
+    if (trayEl) trayEl.style.display = "";
   }
 
   function resetTray() {
