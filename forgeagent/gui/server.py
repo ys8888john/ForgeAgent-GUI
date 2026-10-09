@@ -42,6 +42,37 @@ from .sessions import SessionsSource
 from .spaces import SpaceManager
 from . import dialogs
 
+# 产物（会话里生成的文件）的合法来源之一：agentd 的大结果外置目录。
+# 与 blobstore 共用同一个定义（两边各写一份迟早错位）；agentd 没装时
+# UI 也能起（只是没有 agent 后端），这里给个同形兜底。
+try:
+    from agentd.kernel.blobstore import tool_results_root as _tool_results_root
+except ImportError:  # pragma: no cover - 只有裸 UI 调试时才会走到
+    def _tool_results_root() -> Path:
+        return Path.home() / ".agentd" / "tool_results"
+
+# 产物"打开"的扩展名黑名单：os.startfile 对 .exe/.bat 等等于"执行"。
+# 白名单限定了路径来源之后，这一层保证最坏情况也只是"打开一个文档"，
+# 不会变成"运行一个程序"。
+_ARTIFACT_DENYLIST_EXT = frozenset(
+    {".exe", ".bat", ".cmd", ".com", ".scr", ".msi", ".ps1", ".vbs", ".jar", ".lnk", ".reg"}
+)
+
+
+def _open_with_default_app(path: Path) -> dict:
+    """用系统默认应用打开文件。模块级函数，测试可 monkeypatch。"""
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))  # noqa: S606 - 路径白名单 + 扩展名黑名单已限定
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except OSError as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {"ok": True}
+
+
 ASSETS = Path(__file__).parent / "assets"
 
 
@@ -559,6 +590,34 @@ class _Handler(BaseHTTPRequestHandler):
     def _authed(self) -> bool:
         return self.headers.get("X-ForgeAgent-Token") == self._owner.token
 
+    # ---- 产物卡片：解析 / 打开会话里生成的文件 ----
+
+    def _artifact_path(self, raw: object) -> Path | None:
+        """把前端给的路径折成绝对路径并校验白名单；不在允许范围返回 None。
+
+        白名单 = 当前空间目录 + tool_results 外置目录。前者是 write_file /
+        edit / make_xlsx 的产出地，后者是大结果外置的位置 —— 产物只可能
+        出现在这两处；页面即使被注入了恶意脚本，也最多能"打开"这个范围里
+        的文件，摸不到系统其它地方。
+        """
+        raw = str(raw or "").strip()
+        if not raw:
+            return None
+        p = Path(raw)
+        if not p.is_absolute():
+            p = Path(self._owner.current_space_dir) / p
+        try:
+            rp = p.resolve()
+        except OSError:
+            return None
+        for base in (Path(self._owner.current_space_dir).resolve(), _tool_results_root()):
+            try:
+                rp.relative_to(base)
+            except ValueError:
+                continue
+            return rp
+        return None
+
     # ---- 路由 ----
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的命名
@@ -890,6 +949,33 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(
                 {"ok": True, "hot_swapped": bool(routed), "id": pid or None, "model": model or None}
             )
+
+        # ---- 产物卡片：文件信息 / 打开 ----
+        # 前端从 write_file / edit / make_xlsx 的完成输出里提取路径，先来
+        # /api/file_info 换绝对路径和大小，点击时再调 /api/open_path 用系统
+        # 默认应用打开。两个接口都只认白名单里的路径（见 _artifact_path），
+        # 统一 200 + ok:false 回错误，前端好统一处理。
+        if u.path == "/api/file_info":
+            rp = self._artifact_path(body.get("path"))
+            if rp is None:
+                return self._json({"ok": False, "error": "路径不在允许范围内（当前空间目录 / 外置结果目录）"})
+            if not rp.is_file():
+                return self._json({"ok": False, "error": "文件不存在或已被移动"})
+            try:
+                size = rp.stat().st_size
+            except OSError as exc:
+                return self._json({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            return self._json({"ok": True, "abs": str(rp), "name": rp.name, "size": size})
+
+        if u.path == "/api/open_path":
+            rp = self._artifact_path(body.get("path"))
+            if rp is None:
+                return self._json({"ok": False, "error": "路径不在允许范围内（当前空间目录 / 外置结果目录）"})
+            if not rp.is_file():
+                return self._json({"ok": False, "error": "文件不存在或已被移动"})
+            if rp.suffix.lower() in _ARTIFACT_DENYLIST_EXT:
+                return self._json({"ok": False, "error": f"不允许打开可执行文件 {rp.suffix}"})
+            return self._json(_open_with_default_app(rp))
 
         self._fail(404, f"没有这个接口: {u.path}")
 

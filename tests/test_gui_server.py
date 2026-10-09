@@ -108,6 +108,72 @@ def test_stderr_endpoint(server):
     ]
 
 
+# ---- 产物卡片：/api/file_info 与 /api/open_path ----
+#
+# 前端从 write_file / edit / make_xlsx 的完成输出里提取路径，来这两个接口
+# 换绝对路径/大小、点开文件。白名单 = 当前空间目录 + tool_results 外置目录。
+
+
+def test_file_info_resolves_relative_to_space(server, tmp_path):
+    """相对路径按当前空间目录折算，返回绝对路径 + 大小。"""
+    server.current_space_dir = str(tmp_path)
+    f = tmp_path / "out" / "航班.xlsx"
+    f.parent.mkdir(parents=True)
+    f.write_bytes(b"X" * 23900)
+    r = server.client().post("/api/file_info", {"path": "out/航班.xlsx"})
+    assert r["ok"] is True
+    assert r["abs"] == str(f)
+    assert r["name"] == "航班.xlsx"
+    assert r["size"] == 23900
+
+
+def test_file_info_accepts_absolute_path_inside_space(server, tmp_path):
+    server.current_space_dir = str(tmp_path)
+    f = tmp_path / "a.txt"
+    f.write_text("hi", encoding="utf-8")
+    r = server.client().post("/api/file_info", {"path": str(f)})
+    assert r["ok"] is True
+    assert r["abs"] == str(f)
+
+
+def test_file_info_missing_file(server, tmp_path):
+    server.current_space_dir = str(tmp_path)
+    r = server.client().post("/api/file_info", {"path": "nope.xlsx"})
+    assert r["ok"] is False
+    assert "不存在" in r["error"]
+
+
+def test_file_info_outside_allowlist_is_refused(server):
+    """空间目录之外的绝对路径直接拒绝 —— 防页面被注入后拿它当文件探测器。"""
+    r = server.client().post("/api/file_info", {"path": "C:/Windows/win.ini"})
+    assert r["ok"] is False
+    assert "允许范围" in r["error"]
+
+
+def test_open_path_refuses_executable(server, tmp_path):
+    """扩展名黑名单：os.startfile 对 .bat 等于执行，必须挡掉。"""
+    server.current_space_dir = str(tmp_path)
+    (tmp_path / "evil.bat").write_text("echo hi", encoding="utf-8")
+    r = server.client().post("/api/open_path", {"path": "evil.bat"})
+    assert r["ok"] is False
+    assert "可执行" in r["error"]
+
+
+def test_open_path_opens_with_default_app(server, tmp_path, monkeypatch):
+    import forgeagent.gui.server as srv_mod
+
+    opened = []
+    monkeypatch.setattr(
+        srv_mod, "_open_with_default_app", lambda p: opened.append(p) or {"ok": True}
+    )
+    server.current_space_dir = str(tmp_path)
+    f = tmp_path / "report.md"
+    f.write_text("# hi", encoding="utf-8")
+    r = server.client().post("/api/open_path", {"path": "report.md"})
+    assert r["ok"] is True
+    assert opened == [f]
+
+
 def test_cancel_endpoint_round_trip(server):
     """POST /api/cancel 必须到达协议层 —— 「停止」按钮的完整一跳。"""
     res = server.client().post("/api/cancel", {})

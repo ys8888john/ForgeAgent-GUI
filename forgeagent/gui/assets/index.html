@@ -441,6 +441,32 @@
     white-space: pre-wrap; word-break: break-word;
     max-height: 240px; overflow: auto;
   }
+  /* 产物卡片：write_file / edit / make_xlsx 写出的文件渲染成可点击的一条
+     （对齐 WorkBuddy 的产物卡）—— 图标 + 文件名 + 绝对路径 + 大小，
+     点一下走 /api/open_path 用系统默认应用打开。 */
+  .artifact {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 8px; padding: 8px 10px;
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 8px; cursor: pointer; max-width: 460px;
+  }
+  .artifact:hover { border-color: #b9c2d0; background: #eef1f6; }
+  .artifact.dead { opacity: .55; cursor: default; }
+  .artifact .aicon {
+    width: 30px; height: 30px; border-radius: 7px; flex: none;
+    color: #fff; font-weight: 700; font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .artifact .ameta { min-width: 0; flex: 1; }
+  .artifact .aname {
+    font-weight: 600; font-size: 13px; color: var(--text, #1a1a1a);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .artifact .apath {
+    font-size: 11px; color: var(--text-dim); font-family: var(--mono);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .artifact .asize { font-size: 11px; color: var(--text-dim); flex: none; }
   /* 工具卡片折叠：仿 Thinking 块。搜索/抓取类（web_search/web_fetch）完成后默认
      折叠成一个小条，点 header 展开、再点收起；其余工具默认展开、也可手动折叠。
      inline style.display 在产出输出时被置空（""），所以折叠交给 class 控制，
@@ -1590,6 +1616,11 @@
         card._out.style.display = "";
       }
     }
+    // 写文件类工具（write_file / edit / make_xlsx 都是 kind=edit）完成后，
+    // 从输出里提取产物路径，渲染成可点击的产物条（见 extractArtifact）。
+    if (ev.status === "completed" && card._kindVal === "edit") {
+      extractArtifact(card, ev.output || "");
+    }
     // 调用完成 → 下一步是把结果发回模型，又是一段沉默期。
     // 只有"完成了"才提示：还在跑 / 失败 / 取消的卡片自己已经说明了状态，
     // 这时候再说"等待模型响应"容易让人以为刚才那步没生效。
@@ -1611,6 +1642,77 @@
       el.appendChild(span);
     });
     el.style.display = "";
+  }
+
+  // ---- 产物卡片 ----
+  //
+  // write_file / edit / make_xlsx 的完成输出首行都是
+  //   已新建|已覆盖|已修改 [Excel 文件] <path>（...   或   已修改 <path>：替换 N 处
+  // （agentd 的输出格式，同一个仓库保证）。从 kind=edit 的完成事件里提取
+  // 路径，渲染成可点击的产物条：/api/file_info 换绝对路径和大小，
+  // 点击 → /api/open_path 用系统默认应用打开。对齐 WorkBuddy 的产物卡。
+  var ARTIFACT_RE = /已(?:新建|覆盖|修改)(?:\s+Excel\s*文件)?\s+([^\n（(：]+)/;
+  var ARTIFACT_EXT_COLOR = {
+    ".xlsx": "#217346", ".xls": "#217346", ".csv": "#217346",
+    ".docx": "#2b579a", ".doc": "#2b579a", ".md": "#2b579a", ".txt": "#5a6270",
+    ".pdf": "#c0392b", ".png": "#7d3ac1", ".jpg": "#7d3ac1",
+    ".jpeg": "#7d3ac1", ".gif": "#7d3ac1", ".svg": "#7d3ac1",
+    ".html": "#e67e22", ".json": "#e67e22", ".py": "#3572a5",
+  };
+
+  function humanSize(n) {
+    if (typeof n !== "number" || isNaN(n) || n < 0) return "";
+    var units = ["B", "KB", "MB", "GB"], i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(1)) + " " + units[i];
+  }
+
+  function extractArtifact(card, output) {
+    if (!output || card._artifact) return;  // 一张工具卡只标一个产物；事件重发不重画
+    var m = ARTIFACT_RE.exec(output);
+    var p = m ? m[1].trim() : "";
+    if (!p) return;
+    card._artifact = p;
+
+    var row = document.createElement("div");
+    row.className = "artifact";
+    var icon = document.createElement("span");
+    icon.className = "aicon";
+    var ext = (p.match(/\.[A-Za-z0-9]+$/) || [""])[0].toLowerCase();
+    icon.style.background = ARTIFACT_EXT_COLOR[ext] || "#8891a0";
+    icon.textContent = (ext.replace(".", "") || "file").slice(0, 4).toUpperCase();
+    var meta = document.createElement("span");
+    meta.className = "ameta";
+    var name = document.createElement("div");
+    name.className = "aname";
+    name.textContent = p.split(/[\\/]/).pop();
+    var pathEl = document.createElement("div");
+    pathEl.className = "apath";
+    pathEl.textContent = p;
+    meta.appendChild(name); meta.appendChild(pathEl);
+    var sizeEl = document.createElement("span");
+    sizeEl.className = "asize";
+    row.appendChild(icon); row.appendChild(meta); row.appendChild(sizeEl);
+    card.appendChild(row);
+
+    api("/api/file_info", { method: "POST", body: { path: p } }).then(function (r) {
+      if (!r.ok) {           // 文件没了 / 不在白名单：灰掉，不给点
+        row.classList.add("dead");
+        row.title = r.error || "文件不可访问";
+        return;
+      }
+      pathEl.textContent = r.abs;
+      pathEl.title = r.abs;
+      sizeEl.textContent = humanSize(r.size);
+      row.addEventListener("click", function () {
+        api("/api/open_path", { method: "POST", body: { path: p } }).then(function (r2) {
+          if (!r2.ok) showErrorBubble("打开失败", r2.error || "未知错误");
+        }).catch(function (e) { showErrorBubble("打开失败", String(e)); });
+      });
+    }).catch(function () {
+      row.classList.add("dead");
+      row.title = "文件状态获取失败";
+    });
   }
 
   // 历史记录是静态的，一次性画出来（不走流式）
