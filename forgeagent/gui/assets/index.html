@@ -467,6 +467,21 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .artifact .asize { font-size: 11px; color: var(--text-dim); flex: none; }
+  /* 会话级产物清单（对齐 WorkBuddy 的「查看所有产物 (N)」）：
+     常驻消息流末尾。order:9999 让它永远排到最后一个 —— 不用追着每个
+     appendPoint 把它挪到底部；innerHTML 清空后由 resetTray/ensureTray 重建。 */
+  #artifact-tray { order: 9999; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
+  #artifact-tray-head {
+    align-self: center; cursor: pointer; font-size: 12px; color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 999px; padding: 4px 14px;
+    background: var(--bg); user-select: none;
+  }
+  #artifact-tray-head:hover { background: #eceef1; color: var(--text, #1a1a1a); }
+  #artifact-tray-head .tray-caret { display: inline-block; transition: transform .15s; margin-left: 4px; }
+  #artifact-tray.open .tray-caret { transform: rotate(90deg); }
+  #artifact-tray-list { display: none; flex-direction: column; gap: 8px; align-self: center; width: min(460px, 92%); }
+  #artifact-tray.open #artifact-tray-list { display: flex; }
+  #artifact-tray-list .artifact { width: 100%; max-width: none; }
   /* 工具卡片折叠：仿 Thinking 块。搜索/抓取类（web_search/web_fetch）完成后默认
      折叠成一个小条，点 header 展开、再点收起；其余工具默认展开、也可手动折叠。
      inline style.display 在产出输出时被置空（""），所以折叠交给 class 控制，
@@ -1644,13 +1659,16 @@
     el.style.display = "";
   }
 
-  // ---- 产物卡片 ----
+  // ---- 产物卡片 + 会话级产物清单 ----
   //
   // write_file / edit / make_xlsx 的完成输出首行都是
   //   已新建|已覆盖|已修改 [Excel 文件] <path>（...   或   已修改 <path>：替换 N 处
   // （agentd 的输出格式，同一个仓库保证）。从 kind=edit 的完成事件里提取
   // 路径，渲染成可点击的产物条：/api/file_info 换绝对路径和大小，
   // 点击 → /api/open_path 用系统默认应用打开。对齐 WorkBuddy 的产物卡。
+  //
+  // 本会话的全部产物还会进消息流末尾的「查看所有产物 (N)」托盘（点开列出
+  // 全部，同样可点打开）—— 跨回合累积，切会话/新会话清空（resetTray）。
   var ARTIFACT_RE = /已(?:新建|覆盖|修改)(?:\s+Excel\s*文件)?\s+([^\n（(：]+)/;
   var ARTIFACT_EXT_COLOR = {
     ".xlsx": "#217346", ".xls": "#217346", ".csv": "#217346",
@@ -1659,6 +1677,9 @@
     ".jpeg": "#7d3ac1", ".gif": "#7d3ac1", ".svg": "#7d3ac1",
     ".html": "#e67e22", ".json": "#e67e22", ".py": "#3572a5",
   };
+  var artifacts = {};   // path -> true：本会话已进清单的产物（清单按路径去重）
+  var trayGen = 0;      // 会话代数：切会话 +1，迟到的 file_info 回调对不上就丢弃
+  var trayEl = null, trayCount = null, trayList = null;
 
   function humanSize(n) {
     if (typeof n !== "number" || isNaN(n) || n < 0) return "";
@@ -1667,13 +1688,7 @@
     return (i === 0 ? v : v.toFixed(1)) + " " + units[i];
   }
 
-  function extractArtifact(card, output) {
-    if (!output || card._artifact) return;  // 一张工具卡只标一个产物；事件重发不重画
-    var m = ARTIFACT_RE.exec(output);
-    var p = m ? m[1].trim() : "";
-    if (!p) return;
-    card._artifact = p;
-
+  function buildArtifactRow(p) {
     var row = document.createElement("div");
     row.className = "artifact";
     var icon = document.createElement("span");
@@ -1693,9 +1708,12 @@
     var sizeEl = document.createElement("span");
     sizeEl.className = "asize";
     row.appendChild(icon); row.appendChild(meta); row.appendChild(sizeEl);
-    card.appendChild(row);
+    return { row: row, pathEl: pathEl, sizeEl: sizeEl };
+  }
 
+  function wireArtifact(row, pathEl, sizeEl, p, gen) {
     api("/api/file_info", { method: "POST", body: { path: p } }).then(function (r) {
+      if (gen !== trayGen) return;  // 会话已切走：旧会话的状态不能画进新会话
       if (!r.ok) {           // 文件没了 / 不在白名单：灰掉，不给点
         row.classList.add("dead");
         row.title = r.error || "文件不可访问";
@@ -1710,9 +1728,66 @@
         }).catch(function (e) { showErrorBubble("打开失败", String(e)); });
       });
     }).catch(function () {
+      if (gen !== trayGen) return;
       row.classList.add("dead");
       row.title = "文件状态获取失败";
     });
+  }
+
+  // 托盘元素不是静态 HTML：messages.innerHTML 清空（切会话/新会话）会把它
+  // 连带走，这里按需重建并挂回 #messages（CSS order:9999 保证视觉在最底部）。
+  function ensureTray() {
+    if (trayEl && trayEl.isConnected) return;
+    trayEl = document.createElement("div");
+    trayEl.id = "artifact-tray";
+    trayEl.style.display = "none";
+    var head = document.createElement("div");
+    head.id = "artifact-tray-head";
+    head.appendChild(document.createTextNode("查看所有产物 ("));
+    trayCount = document.createElement("span");
+    trayCount.id = "artifact-count";
+    trayCount.textContent = "0";
+    head.appendChild(trayCount);
+    head.appendChild(document.createTextNode(")"));
+    var caret = document.createElement("span");
+    caret.className = "tray-caret";
+    caret.textContent = "▸";
+    head.appendChild(caret);
+    head.addEventListener("click", function () { trayEl.classList.toggle("open"); });
+    trayList = document.createElement("div");
+    trayList.id = "artifact-tray-list";
+    trayEl.appendChild(head);
+    trayEl.appendChild(trayList);
+    messages.appendChild(trayEl);
+  }
+
+  function trayRegister(p) {
+    if (artifacts[p]) return;   // 同一文件本会话只进一次清单（内联卡可以有多张）
+    artifacts[p] = true;
+    ensureTray();
+    trayEl.style.display = "";
+    trayCount.textContent = String(Object.keys(artifacts).length);
+    var built = buildArtifactRow(p);
+    trayList.appendChild(built.row);
+    wireArtifact(built.row, built.pathEl, built.sizeEl, p, trayGen);
+  }
+
+  function resetTray() {
+    trayGen++;              // 迟到的 file_info / open 回调作废
+    artifacts = {};
+    trayEl = null; trayCount = null; trayList = null;  // 旧节点随 innerHTML 清空一起没
+  }
+
+  function extractArtifact(card, output) {
+    if (!output || card._artifact) return;  // 一张工具卡只标一个产物；事件重发不重画
+    var m = ARTIFACT_RE.exec(output);
+    var p = m ? m[1].trim() : "";
+    if (!p) return;
+    card._artifact = p;
+    var built = buildArtifactRow(p);
+    card.appendChild(built.row);
+    wireArtifact(built.row, built.pathEl, built.sizeEl, p, trayGen);
+    trayRegister(p);
   }
 
   // 历史记录是静态的，一次性画出来（不走流式）
@@ -2370,6 +2445,7 @@
     messages.innerHTML = "";
     current = null;
     toolCards = {};
+    resetTray();  // 会话级产物清单清空；下面重放 tool_record 时会重新注册进来
     clearPermissions();  // 切会话时旧弹窗对应的请求已经作废（协议层会回 cancelled）
     (history || []).forEach(function (m) {
       if (m.role === "tool_record") {
@@ -2416,6 +2492,7 @@
       activeSession = r.session;
       current = null;
       toolCards = {};
+      resetTray();  // 新会话没有产物；旧会话的清单不带走
       pendingBubble = null;  // 上面那句清空了 #messages，引用得跟着放掉
       messages.innerHTML = "";
       clearPermissions();

@@ -30,6 +30,20 @@ def test_artifact_open_goes_through_server_routes():
     assert '"/api/open_path"' in raw
 
 
+def test_session_artifact_tray_wired_and_reset():
+    """会话级「查看所有产物 (N)」托盘：注册、去重、切会话清空，三件都在。"""
+    raw = _index()
+    assert "查看所有产物 (" in raw
+    assert "function trayRegister" in raw
+    assert "function resetTray" in raw
+    assert "function ensureTray" in raw
+    # 切会话的两处（renderHistory / newChat）都必须清托盘；新一轮开始的
+    # 防御性 toolCards 重置不能清（产物跨回合累积）。
+    assert raw.count("resetTray()") >= 2
+    # 托盘常驻消息流末尾靠 CSS order，而不是追着 appendPoint 挪
+    assert "order: 9999" in raw
+
+
 def test_server_has_artifact_routes():
     raw = (ROOT / "forgeagent" / "gui" / "server.py").read_text(encoding="utf-8")
     assert 'u.path == "/api/file_info"' in raw
