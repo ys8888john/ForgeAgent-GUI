@@ -80,3 +80,17 @@ def test_tool_status_labels_cover_what_the_client_can_emit():
     labels = _js_object("TOOL_STATUS_LABEL")
     missing = [s for s in CLIENT_TOOL_STATUSES if s not in labels]
     assert not missing, f"这些状态没有文案，卡片上会显示英文：{missing}"
+
+
+def test_read_tools_auto_collapse_when_done():
+    """read_file 这类读取卡完成后要默认折叠（2026-10-09 用户反馈）。
+
+    read 输出动辄一屏装不下（外置化的 tool_results 一读就是几百行），跟
+    search/fetch 同等对待：完成即收起，想看再点开；手动展开过的卡不被折叠。
+    """
+    m = re.search(r"var AUTO_COLLAPSE_KINDS = \{(.*?)\};", _index_text(), re.S)
+    assert m, "index.html 里找不到 var AUTO_COLLAPSE_KINDS —— 改名了？"
+    kinds = set(re.findall(r"(\w+)\s*:\s*1", m.group(1)))
+    assert {"search", "fetch", "read"} <= kinds, (
+        f"完成后自动折叠名单缺 kind，现值：{sorted(kinds)}"
+    )
