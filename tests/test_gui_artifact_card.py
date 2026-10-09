@@ -44,6 +44,17 @@ def test_session_artifact_tray_wired_and_reset():
     assert "order: 9999" in raw
 
 
+def test_inline_shows_only_latest_and_tray_click_reveals_folder():
+    """行为对齐 WorkBuddy：消息流里只挂最新目标产物；点托盘 = 弹文件夹。"""
+    raw = _index()
+    # 内联替换：新产物出现时旧的降级（turnInline.row.remove()）
+    assert "turnInline" in raw and "turnInline.row.remove()" in raw
+    # 托盘点击不再展开列表，而是 reveal 到文件管理器
+    assert "revealLatest" in raw
+    assert 'reveal: true' in raw
+    assert "artifact-tray-list" not in raw
+
+
 def test_server_has_artifact_routes():
     raw = (ROOT / "forgeagent" / "gui" / "server.py").read_text(encoding="utf-8")
     assert 'u.path == "/api/file_info"' in raw
@@ -51,3 +62,6 @@ def test_server_has_artifact_routes():
     # 白名单与扩展名黑名单都在
     assert "_tool_results_root" in raw
     assert "_ARTIFACT_DENYLIST_EXT" in raw
+    # reveal 分支：文件管理器定位，不落扩展名黑名单
+    assert "def _reveal_in_folder" in raw
+    assert 'body.get("reveal")' in raw

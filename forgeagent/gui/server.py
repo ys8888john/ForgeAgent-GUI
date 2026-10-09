@@ -73,6 +73,21 @@ def _open_with_default_app(path: Path) -> dict:
     return {"ok": True}
 
 
+def _reveal_in_folder(path: Path) -> dict:
+    """在系统文件管理器里定位并选中文件（不执行文件本身，黑名单不适用）。"""
+    try:
+        if sys.platform == "win32":
+            # explorer /select 的逗号是它自己的参数语法，不是 shell 分隔
+            subprocess.Popen(["explorer", "/select,", str(path)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path.parent)])
+    except OSError as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {"ok": True}
+
+
 ASSETS = Path(__file__).parent / "assets"
 
 
@@ -973,6 +988,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "路径不在允许范围内（当前空间目录 / 外置结果目录）"})
             if not rp.is_file():
                 return self._json({"ok": False, "error": "文件不存在或已被移动"})
+            # reveal=true：不在文件管理器里"打开"文件，而是定位并选中它 ——
+            # 只弹文件夹不做任何执行，扩展名黑名单对它没有意义。
+            if body.get("reveal"):
+                return self._json(_reveal_in_folder(rp))
             if rp.suffix.lower() in _ARTIFACT_DENYLIST_EXT:
                 return self._json({"ok": False, "error": f"不允许打开可执行文件 {rp.suffix}"})
             return self._json(_open_with_default_app(rp))

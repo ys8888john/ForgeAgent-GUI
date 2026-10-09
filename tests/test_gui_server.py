@@ -174,6 +174,34 @@ def test_open_path_opens_with_default_app(server, tmp_path, monkeypatch):
     assert opened == [f]
 
 
+def test_open_path_reveal_targets_folder_selection(server, tmp_path, monkeypatch):
+    """reveal=true：走文件管理器定位，且不受可执行扩展名黑名单限制。"""
+    import forgeagent.gui.server as srv_mod
+
+    revealed = []
+    monkeypatch.setattr(
+        srv_mod, "_reveal_in_folder", lambda p: revealed.append(p) or {"ok": True}
+    )
+    server.current_space_dir = str(tmp_path)
+    f = tmp_path / "report.md"
+    f.write_text("x", encoding="utf-8")
+    r = server.client().post("/api/open_path", {"path": "report.md", "reveal": True})
+    assert r["ok"] is True
+    assert revealed == [f]
+
+    # 黑名单扩展名走 reveal 也只是"在管理器里选中"，放行
+    bat = tmp_path / "evil.bat"
+    bat.write_text("echo hi", encoding="utf-8")
+    r = server.client().post("/api/open_path", {"path": "evil.bat", "reveal": True})
+    assert r["ok"] is True
+    assert revealed[-1] == bat
+
+    # 不带 reveal 的同一个 .bat 仍然被黑名单拦下
+    r = server.client().post("/api/open_path", {"path": "evil.bat"})
+    assert r["ok"] is False
+    assert "可执行" in r["error"]
+
+
 def test_cancel_endpoint_round_trip(server):
     """POST /api/cancel 必须到达协议层 —— 「停止」按钮的完整一跳。"""
     res = server.client().post("/api/cancel", {})

@@ -469,19 +469,15 @@
   .artifact .asize { font-size: 11px; color: var(--text-dim); flex: none; }
   /* 会话级产物清单（对齐 WorkBuddy 的「查看所有产物 (N)」）：
      常驻消息流末尾。order:9999 让它永远排到最后一个 —— 不用追着每个
-     appendPoint 把它挪到底部；innerHTML 清空后由 resetTray/ensureTray 重建。 */
-  #artifact-tray { order: 9999; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
+     appendPoint 把它挪到底部；innerHTML 清空后由 resetTray/ensureTray 重建。
+     点击不在会话里展开，而是弹出文件管理器定位最新产物（revealLatest）。 */
+  #artifact-tray { order: 9999; flex-shrink: 0; display: flex; flex-direction: column; }
   #artifact-tray-head {
     align-self: center; cursor: pointer; font-size: 12px; color: var(--text-dim);
     border: 1px solid var(--border); border-radius: 999px; padding: 4px 14px;
     background: var(--bg); user-select: none;
   }
   #artifact-tray-head:hover { background: #eceef1; color: var(--text, #1a1a1a); }
-  #artifact-tray-head .tray-caret { display: inline-block; transition: transform .15s; margin-left: 4px; }
-  #artifact-tray.open .tray-caret { transform: rotate(90deg); }
-  #artifact-tray-list { display: none; flex-direction: column; gap: 8px; align-self: center; width: min(460px, 92%); }
-  #artifact-tray.open #artifact-tray-list { display: flex; }
-  #artifact-tray-list .artifact { width: 100%; max-width: none; }
   /* 工具卡片折叠：仿 Thinking 块。搜索/抓取类（web_search/web_fetch）完成后默认
      折叠成一个小条，点 header 展开、再点收起；其余工具默认展开、也可手动折叠。
      inline style.display 在产出输出时被置空（""），所以折叠交给 class 控制，
@@ -1678,8 +1674,10 @@
     ".html": "#e67e22", ".json": "#e67e22", ".py": "#3572a5",
   };
   var artifacts = {};   // path -> true：本会话已进清单的产物（清单按路径去重）
+  var trayOrder = [];   // 注册顺序：托盘点击时 reveal 其中最新的一个
   var trayGen = 0;      // 会话代数：切会话 +1，迟到的 file_info 回调对不上就丢弃
-  var trayEl = null, trayCount = null, trayList = null;
+  var trayEl = null, trayCount = null;
+  var turnInline = null;  // 当前内联展示的产物 {row, path}；新产物出现时旧的降级
 
   function humanSize(n) {
     if (typeof n !== "number" || isNaN(n) || n < 0) return "";
@@ -1736,7 +1734,12 @@
 
   // 托盘元素不是静态 HTML：messages.innerHTML 清空（切会话/新会话）会把它
   // 连带走，这里按需重建并挂回 #messages（CSS order:9999 保证视觉在最底部）。
+  // 顺手收掉页面上可能存在的孤儿托盘（热重载/异常路径的残留）。
   function ensureTray() {
+    var stale = messages.querySelectorAll("#artifact-tray");
+    for (var i = 0; i < stale.length; i++) {
+      if (stale[i] !== trayEl) stale[i].remove();
+    }
     if (trayEl && trayEl.isConnected) return;
     trayEl = document.createElement("div");
     trayEl.id = "artifact-tray";
@@ -1749,33 +1752,43 @@
     trayCount.textContent = "0";
     head.appendChild(trayCount);
     head.appendChild(document.createTextNode(")"));
-    var caret = document.createElement("span");
-    caret.className = "tray-caret";
-    caret.textContent = "▸";
-    head.appendChild(caret);
-    head.addEventListener("click", function () { trayEl.classList.toggle("open"); });
-    trayList = document.createElement("div");
-    trayList.id = "artifact-tray-list";
+    head.title = "在文件管理器中打开最新产物的所在文件夹";
+    head.addEventListener("click", revealLatest);
     trayEl.appendChild(head);
-    trayEl.appendChild(trayList);
     messages.appendChild(trayEl);
   }
 
+  // 点击「查看所有产物 (N)」：不在会话里展开列表（WorkBuddy 同款行为是
+  // 交给文件管理器）—— 弹出资源管理器并定位最新产物，其余的都在同一片。
+  function revealLatest() {
+    if (!trayOrder.length) return;
+    var p = trayOrder[trayOrder.length - 1];
+    api("/api/open_path", { method: "POST", body: { path: p, reveal: true } }).then(function (r) {
+      if (!r.ok) showErrorBubble("打开文件夹失败", r.error || "未知错误");
+    }).catch(function (e) { showErrorBubble("打开文件夹失败", String(e)); });
+  }
+
   function trayRegister(p) {
-    if (artifacts[p]) return;   // 同一文件本会话只进一次清单（内联卡可以有多张）
+    if (artifacts[p]) {
+      // 已在清单：把它提为"最新"（reveal 指向它），计数不变
+      var idx = trayOrder.indexOf(p);
+      if (idx >= 0) trayOrder.splice(idx, 1);
+      trayOrder.push(p);
+      ensureTray();
+      return;
+    }
     artifacts[p] = true;
+    trayOrder.push(p);
     ensureTray();
-    trayEl.style.display = "";
-    trayCount.textContent = String(Object.keys(artifacts).length);
-    var built = buildArtifactRow(p);
-    trayList.appendChild(built.row);
-    wireArtifact(built.row, built.pathEl, built.sizeEl, p, trayGen);
+    trayCount.textContent = String(trayOrder.length);
   }
 
   function resetTray() {
     trayGen++;              // 迟到的 file_info / open 回调作废
     artifacts = {};
-    trayEl = null; trayCount = null; trayList = null;  // 旧节点随 innerHTML 清空一起没
+    trayOrder = [];
+    turnInline = null;
+    trayEl = null; trayCount = null;  // 旧节点随 innerHTML 清空一起没
   }
 
   function extractArtifact(card, output) {
@@ -1784,9 +1797,13 @@
     var p = m ? m[1].trim() : "";
     if (!p) return;
     card._artifact = p;
+    // 消息流里只内联展示最新一个产物（对齐 WorkBuddy：只有目标产物挂卡），
+    // 同一轮更早的产物降级 —— 工具输出里仍有路径，托盘清单里也都在。
+    if (turnInline && turnInline.row.isConnected) turnInline.row.remove();
     var built = buildArtifactRow(p);
     card.appendChild(built.row);
     wireArtifact(built.row, built.pathEl, built.sizeEl, p, trayGen);
+    turnInline = { row: built.row, path: p };
     trayRegister(p);
   }
 
