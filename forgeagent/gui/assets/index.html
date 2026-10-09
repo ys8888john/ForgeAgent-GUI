@@ -1640,9 +1640,14 @@
         card._out.style.display = "";
       }
     }
-    // 写文件类工具（write_file / edit / make_xlsx 都是 kind=edit）完成后，
-    // 从输出里提取产物路径，渲染成可点击的产物条（见 extractArtifact）。
-    if (ev.status === "completed" && card._kindVal === "edit") {
+    // 写文件类工具完成后，从输出里提取产物路径，渲染成可点击的产物条
+    // （见 extractArtifact）。门槛不能只认 kind=edit：make_xlsx 在 agentd 里
+    // 声明的是 kind=execute（2026-10-09 真机首跑实锤——航班 Excel 生成了、
+    // 正文也报了路径，产物卡和托盘却都没出现）。放宽到所有 completed，
+    // 让 ARTIFACT_RE 自己把关：只有「已新建|已覆盖|已修改 <path>」这种落盘
+    // 措辞才命中，普通工具输出（搜索结果、抓取正文）不会误判；真误报了，
+    // 服务端白名单还会再拦一道。
+    if (ev.status === "completed") {
       extractArtifact(card, ev.output || "");
     }
     // 活动标签的文案由 handle() 的 tool 分支统一更新，这里不能碰：

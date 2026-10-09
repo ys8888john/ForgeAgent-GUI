@@ -18,9 +18,12 @@ def test_artifact_extraction_wired_into_tool_events():
     # 提取逻辑存在
     assert "ARTIFACT_RE" in raw
     assert "已(?:新建|覆盖|修改)" in raw
-    # 只对 edit 类工具、完成状态触发（write_file / edit / make_xlsx）
-    assert 'card._kindVal === "edit"' in raw
+    # 完成状态即触发、kind 不设限：make_xlsx 在 agentd 里是 kind=execute，
+    # 只认 edit 会把它的产物整个漏掉（2026-10-09 真机首跑实锤——Excel 生成
+    # 了、正文也报了路径，产物卡和托盘却都没出现）。是否落盘输出交给
+    # ARTIFACT_RE 把关，这里钉住「edit 门槛不能再回来」。
     assert "extractArtifact(card" in raw
+    assert 'card._kindVal === "edit"' not in raw
 
 
 def test_artifact_open_goes_through_server_routes():
