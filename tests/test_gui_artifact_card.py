@@ -57,6 +57,12 @@ def test_inline_shows_only_latest_and_tray_click_reveals_folder():
     raw = _index()
     # 内联替换：新产物出现时旧的降级（turnInline.row.remove()）
     assert "turnInline" in raw and "turnInline.row.remove()" in raw
+    # 产物条挂在消息流末尾（模型最终回复的下面），不是塞进工具卡：
+    # order:9998 排在正文气泡(order:0)之后、托盘(9999)之前。
+    assert "artifact-inline" in raw
+    assert "order: 9998" in raw
+    assert "messages.appendChild(built.row)" in raw
+    assert "card.appendChild(built.row)" not in raw
     # 托盘点击不再展开列表，而是 reveal 到文件管理器
     assert "revealLatest" in raw
     assert 'reveal: true' in raw

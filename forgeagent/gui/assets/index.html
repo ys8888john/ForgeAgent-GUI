@@ -452,6 +452,13 @@
   }
   .artifact:hover { border-color: #b9c2d0; background: #eef1f6; }
   .artifact.dead { opacity: .55; cursor: default; }
+  /* 内联产物卡（extractArtifact 挂到消息流末尾的那条）：产物应该在**模型
+     最终回复的下面**（2026-10-09 用户反馈，对齐 WorkBuddy），而不是塞在
+     工具卡里。order:9998 让它永远排在所有正文气泡（order:0）之后、
+     托盘(9999)之前 —— 工具完成时正文还没流出来也排不乱。 */
+  #messages .artifact-inline {
+    order: 9998; flex-shrink: 0; align-self: flex-start; margin: 2px 0 6px;
+  }
   .artifact .aicon {
     width: 30px; height: 30px; border-radius: 7px; flex: none;
     color: #fff; font-weight: 700; font-size: 12px;
@@ -1831,7 +1838,12 @@
     // 同一轮更早的产物降级 —— 工具输出里仍有路径，托盘清单里也都在。
     if (turnInline && turnInline.row.isConnected) turnInline.row.remove();
     var built = buildArtifactRow(p);
-    card.appendChild(built.row);
+    // 挂到消息流末尾，**不塞进工具卡**：产物该在模型最终回复的下面
+    // （2026-10-09 用户反馈）。视觉顺序由 .artifact-inline 的 order:9998
+    // 保证 —— 正文气泡全是 order:0，工具完成时正文还没流出来也插不到
+    // 它前面；托盘 order:9999 仍在它下面。
+    built.row.classList.add("artifact-inline");
+    messages.appendChild(built.row);
     wireArtifact(built.row, built.pathEl, built.sizeEl, p, trayGen);
     turnInline = { row: built.row, path: p };
     trayRegister(p);
