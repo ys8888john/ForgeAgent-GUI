@@ -1233,6 +1233,13 @@
   // 中间那段空白是"沉默期"：屏幕上一点动静都没有，看着像卡死。
   // 这里补一个占位气泡，并且**就地更新文案**（不重建节点）：同一轮里工具跑完
   // 还要再等下一轮模型，如果每次新建一个，会话里会留下一堆"等待"气泡。
+  //
+  // 2026-10-09 升级：这个气泡从「开始前的占位」改成**整轮常驻的活动标签**。
+  // 起因是用户截图：正文「……航班选项：」流完之后模型开始攒 make_xlsx 的调用
+  // 参数（几百行数据全在 JSON 参数里，要吐很久）—— 这段既没有正文 delta、也
+  // 没有 ToolCallStart（参数没攒完不发 start），旧逻辑把占位收掉后屏幕上又
+  // 一个动静都没有。所以标签整轮活着、文案跟着事件走（等待模型响应 → 思考中
+  // /正在生成… → 正在执行 xxx → 等待模型响应），done 才收掉。
   var pendingBubble = null;
 
   function showPending(text) {
@@ -1248,13 +1255,19 @@
       el._label = lab;
       messages.appendChild(el);
       pendingBubble = el;
+    } else if (pendingBubble.nextSibling) {
+      // 标签后面又出现了新内容（气泡/卡片追加到它之后了）：挪回消息流末尾。
+      // 活动标签永远贴着当前进度的底部；产物托盘有 order:9999，挪完仍在托盘前。
+      messages.appendChild(pendingBubble);
     }
     pendingBubble._label.textContent = text;
     if (autoScroll) scrollToBottom();
   }
 
-  // 收掉占位气泡。每个"这一轮开始产出内容"的入口都要记得调 —— 忘一处就会
-  // 留下一个永远在跳的"等待模型响应"，比没有提示更糟。
+  // 收掉活动标签。只有「一轮彻底结束」的入口才调（done / 状态错误）——
+  // 中途的 delta / tool 事件是**改文案**而不是收掉：收掉后遇到静默期
+  // （攒工具参数、下一轮请求排队）屏幕又回到没有动静的状态。
+  // 忘了在 done 里调的后果比没有提示更糟：会话末尾永远留着一颗在跳的标签。
   function clearPending() {
     if (!pendingBubble) return;
     if (pendingBubble.parentNode) pendingBubble.parentNode.removeChild(pendingBubble);
@@ -1632,10 +1645,10 @@
     if (ev.status === "completed" && card._kindVal === "edit") {
       extractArtifact(card, ev.output || "");
     }
-    // 调用完成 → 下一步是把结果发回模型，又是一段沉默期。
-    // 只有"完成了"才提示：还在跑 / 失败 / 取消的卡片自己已经说明了状态，
-    // 这时候再说"等待模型响应"容易让人以为刚才那步没生效。
-    if (ev.status === "completed") showPending("等待模型响应");
+    // 活动标签的文案由 handle() 的 tool 分支统一更新，这里不能碰：
+    // renderHistory 重放历史工具记录时也走 upsertTool，历史记录全是
+    // completed —— 在这里发标签会给旧会话的结尾留下一颗永远在跳的
+    // 「等待模型响应」（2026-10-09 复查发现的实锤 bug，顺手修掉）。
     if (autoScroll) scrollToBottom();
   }
 
@@ -3384,8 +3397,10 @@
     }
 
     if (ev.type === "delta") {
-      // 有内容流出来了 —— 占位气泡的使命结束（它只是"还没开始"的说明）
-      clearPending();
+      // 有内容流出来了 —— 活动标签**改文案跟随**，不收掉：正文停更但一轮没完
+      // 的静默期（模型在攒工具调用参数、下一条请求在排队）里，它是屏幕上唯一
+      // 的"在干活"标记。思考段和正文分别给准确的说法。
+      showPending(ev.role === "thought" ? "思考中…" : "正在生成…");
       // 换角色就换一个气泡：正文 / 思考 / 错误分开显示，别糊在一起
       var want = ev.role;
       // 纯空白的 delta 不值得开新气泡：GLM 会在"思考段结束→工具调用"之间
@@ -3408,10 +3423,17 @@
     }
 
     if (ev.type === "tool") {
-      // 工具卡片自己就是"在干活"的可见证据，占位气泡留着反而占地方；
-      // 而且卡片常带输出，这里再放一个盖住卡片就本末倒置了。
-      clearPending();
+      // 工具卡片自己就是"在干活"的可见证据；活动标签跟着改文案：
+      // 运行中点名是谁在跑（「正在执行 make_xlsx…」），终态（完成/失败/取消）
+      // 之后是把结果发回模型的又一段沉默期，转回「等待模型响应」。
+      // 任何一种情况都不收掉标签 —— 它整轮活着，done 才收。
       upsertTool(ev);
+      var tst = ev.status || "";
+      if (tst === "completed" || tst === "failed" || tst === "cancelled") {
+        showPending("等待模型响应");
+      } else {
+        showPending("正在执行 " + (ev.title || "工具") + "…");
+      }
       report();
       return;
     }
@@ -3419,6 +3441,7 @@
     if (ev.type === "permission") {
       permQueue.push(ev);
       showNextPermission();
+      showPending("等待你审批");
       return;
     }
 
