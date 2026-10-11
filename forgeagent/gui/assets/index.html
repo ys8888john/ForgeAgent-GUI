@@ -454,10 +454,12 @@
   .artifact.dead { opacity: .55; cursor: default; }
   /* 内联产物卡（extractArtifact 挂到消息流末尾的那条）：产物应该在**模型
      最终回复的下面**（2026-10-09 用户反馈，对齐 WorkBuddy），而不是塞在
-     工具卡里。order:9998 让它永远排在所有正文气泡（order:0）之后、
-     托盘(9999)之前 —— 工具完成时正文还没流出来也排不乱。 */
+     工具卡里。关键：走**正常文档流**（不给 order），归位到「产生它的那一轮」
+     区间里 —— 2026-10-13 修正：原先 order:9998 把它永远钉在 #messages 最底，
+     导致第二轮进行时第一轮的产物还浮在最下面（用户反馈「下一轮应是全新的」）。
+     轮末 done 时再把它 move 到本轮正文气泡之后：既落在回复下面，又不串进下一轮。 */
   #messages .artifact-inline {
-    order: 9998; flex-shrink: 0; align-self: flex-start; margin: 2px 0 6px;
+    flex-shrink: 0; align-self: flex-start; margin: 2px 0 6px;
   }
   .artifact .aicon {
     width: 30px; height: 30px; border-radius: 7px; flex: none;
@@ -492,6 +494,40 @@
   .tool-caret { margin-left: 8px; font-size: 10px; transition: transform 0.15s; }
   .bubble.tool.collapsed .tool-caret { transform: rotate(-90deg); }
   .bubble.tool.collapsed .tool-out { display: none; }
+
+  /* 工具调用分组：同一轮里连续多个工具调用收进一个「工具调用 ×N」标签，
+     默认折叠只占一行，点 header 展开看每一张卡（2026-10-11 用户截图：
+     一次航班搜索渲染出 14 张卡片，把整屏竖着占满）。单张卡不包组，
+     行为与旧版完全一致 —— 只有多于一张时才值得收。 */
+  .bubble.tool-group {
+    align-self: flex-start; max-width: 82%; width: fit-content;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0; overflow: hidden;
+  }
+  .tool-group-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; cursor: pointer; user-select: none;
+  }
+  .tool-group-head:hover { background: var(--code-bg); }
+  .tool-group-title { font-weight: 600; font-size: 13px; }
+  .tool-group-count {
+    font-size: 10px; color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
+  }
+  /* 组状态跟随单卡配色：运行中黄、完成绿、失败红 */
+  .tool-group-status { margin-left: auto; font-size: 11px; color: var(--text-dim); }
+  .bubble.tool-group.running .tool-group-status { color: #b7791f; }
+  .bubble.tool-group.done .tool-group-status { color: #17a673; }
+  .bubble.tool-group.failed .tool-group-status { color: var(--danger); }
+  .tool-group-caret { margin-left: 8px; font-size: 10px; transition: transform 0.15s; }
+  .bubble.tool-group.collapsed .tool-group-caret { transform: rotate(-90deg); }
+  .bubble.tool-group.collapsed .tool-group-body { display: none; }
+  .tool-group-body {
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 6px 10px 10px; border-top: 1px solid var(--border);
+  }
+  /* 组内卡片放宽到占满组宽：外层已有一层边框，卡片再 82% 会缩两道 */
+  .tool-group-body .bubble.tool { max-width: 100%; padding: 6px 10px; }
 
   .bubble p { margin: 0 0 8px; }
   .bubble p:last-child { margin-bottom: 0; }
@@ -539,8 +575,49 @@
 
   #composer {
     flex: 0 0 auto; border-top: 1px solid var(--border);
-    padding: 10px 16px; display: flex; gap: 8px; align-items: flex-end;
+    padding: 10px 16px; display: flex; flex-direction: column; gap: 6px;
     background: var(--bg-soft);
+  }
+  #composer-row {
+    display: flex; gap: 8px; align-items: flex-end;
+  }
+  /* 待发送图片条：空时不出现，不占一行 */
+  #attach-strip { display: flex; gap: 6px; flex-wrap: wrap; }
+  #attach-strip:empty { display: none; }
+  .att-thumb {
+    position: relative; width: 64px; height: 64px;
+    border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+    background: var(--bg);
+  }
+  .att-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .att-thumb .att-x {
+    position: absolute; top: 0; right: 0; width: 18px; height: 18px;
+    border: none; border-radius: 0 0 0 6px; background: rgba(0,0,0,.55);
+    color: #fff; font-size: 11px; line-height: 18px; cursor: pointer; padding: 0;
+  }
+  .att-thumb .att-x:hover { background: rgba(0,0,0,.8); }
+  .att-thumb.uploading::after {
+    content: "…"; position: absolute; inset: 0; display: flex;
+    align-items: center; justify-content: center; color: #fff;
+    background: rgba(0,0,0,.35); font-size: 18px;
+  }
+  #attach { font-size: 14px; padding: 8px 12px; }
+  /* 欢迎页的待发送图片条与 📎 按钮：条复用 .att-thumb，空时不占位 */
+  #w-attach-strip { display: flex; gap: 6px; flex-wrap: wrap; }
+  #w-attach-strip:empty { display: none; }
+  .w-attachbtn {
+    border: none; background: transparent; cursor: pointer; font-size: 14px;
+    padding: 2px 6px; border-radius: 6px; color: var(--text-dim); flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .w-attachbtn:hover { background: var(--bg-soft); color: var(--text); }
+  .w-attachbtn svg, #attach svg { display: block; }
+  #attach { display: inline-flex; align-items: center; justify-content: center; padding: 8px 10px; }
+  /* 用户气泡里已发送的图片缩略图 */
+  .user-imgs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .user-imgs img {
+    max-width: 180px; max-height: 140px; border-radius: 6px;
+    border: 1px solid var(--border); cursor: zoom-in; display: block;
   }
   #input {
     flex: 1; font-family: inherit; font-size: 14px; line-height: 1.5;
@@ -874,11 +951,13 @@
       <div class="w-chips" id="w-chips"></div>
       <div class="w-box">
         <textarea id="w-input" rows="2" placeholder="今天帮你做些什么？（Enter 发送，Shift+Enter 换行）"></textarea>
+        <div id="w-attach-strip"></div>
         <div class="w-foot">
           <div class="w-meta">
             <span class="w-frag" id="w-space" title="当前空间">📁 …</span>
           </div>
           <div class="w-meta">
+            <button id="w-attach" class="w-attachbtn" type="button" title="添加图片（也可直接 Ctrl+V 粘贴截图）"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></button>
             <span class="w-frag" id="w-model" title="点这里切换模型（与顶部下拉等价）">…</span>
             <button id="w-send" class="w-sendbtn" type="button" title="发送（Enter）">➤</button>
           </div>
@@ -902,9 +981,15 @@
     </div>
 
     <div id="composer">
-      <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
-      <button id="send">发送</button>
-      <button id="stop" disabled title="停止当前生成（中断后仍保留已生成的部分）">停止</button>
+      <!-- 待发送图片缩略图条：有图才占位（:empty 隐藏），× 可撤回 -->
+      <div id="attach-strip"></div>
+      <div id="composer-row">
+        <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行，可附图片）"></textarea>
+        <button id="attach" type="button" title="附加图片（发给模型识别）"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></button>
+        <button id="send">发送</button>
+        <button id="stop" disabled title="停止当前生成（中断后仍保留已生成的部分）">停止</button>
+      </div>
+      <input id="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple hidden>
     </div>
     <div class="hint">Ctrl/Cmd + L 看日志　·　Ctrl/Cmd + Enter 发送　·　点左侧会话可续聊</div>
 
@@ -1055,14 +1140,33 @@
   var statusText = document.getElementById("status-text");
   var logPane = document.getElementById("log-pane");
   var logBody = document.getElementById("log-body");
+  var attachBtn = document.getElementById("attach");
+  var fileInput = document.getElementById("file-input");
+  var attachStrip = document.getElementById("attach-strip");
+  var composer = document.getElementById("composer");
+  var wAttachBtn = document.getElementById("w-attach");
+  var wAttachStrip = document.getElementById("w-attach-strip");
 
   var busy = false;
   var current = null;      // 当前正在流式输出的 bubble
   var autoScroll = true;
+  // 待发送的图片：[{id, url, name}]。id 是 /api/upload 返回的认领凭据，
+  // url 是本机缩略图地址（/api/file/<id>，凭 id 认领，无需带 token 头）。
+  var pendingImages = [];
   var logTimer = null;
   var started = false;
   var activeSession = null;  // 当前所在的会话 id（null = 还没切过）
   var toolCards = {};        // call_id -> 工具卡片元素（同一张卡片就地更新）
+  var toolGroupBarrier = false;  // 旧相邻归组遗留的屏障位；现归组改为按「轮」判定，此变量已不再参与主逻辑，仅保留给测试钩子
+  // ---- 按「轮」归组的状态 ----
+  // 用户一次提问=一轮；一轮里内核可能连调多个工具（read→思考→web_search…），
+  // 无论工具卡之间隔着多少 Thinking/正文气泡，全部收进同一个「工具调用 ×N」标签。
+  //   · currentToolGroup：本轮已成型（≥2 张）的工具组元素；null 表示本轮还没成组
+  //   · currentRoundFirstCard：本轮首张裸卡（只有 1 张时保持裸卡不包壳）；成组后置空
+  // 两者都在「新一轮 user 事件 / 切会话 / 历史重放」时复位，从而天然切轮。
+  var currentToolGroup = null;
+  var currentRoundFirstCard = null;
+  var replaying = false;     // 历史重放开关：重放走相邻归组（不同历史轮靠正文/思考自然切开），实时流走按轮归组
 
   // ---- 跟本机 Python 进程通信 ----
   //
@@ -1595,6 +1699,128 @@
   // （userToggled）不再被折叠。
   var AUTO_COLLAPSE_KINDS = { search: 1, fetch: 1, read: 1 };
 
+  // ---- 工具调用分组 ----
+  //
+  // 两条路径，由 replaying 开关切换：
+  //
+  // 【实时流式 · 按「轮」归组】用户一次提问=一轮。本轮里不管调多少工具、中间
+  // 隔着多少 Thinking/正文气泡，全部收进同一个「工具调用 ×N」标签。靠
+  // currentToolGroup / currentRoundFirstCard 两个引用维护本轮状态，新一轮
+  // （user 事件）或切会话时复位，自然切轮。单调用（本轮只有 1 张）保持裸卡、
+  // 不包壳；出现第 2 张才把首张裸卡就地包成组。这修复了「相邻才归组」时
+  // 工具卡被思考/正文气泡切成多个框的问题（2026-10-11 用户实机截图反馈）。
+  //
+  // 【历史重放 · 相邻归组】落库的工具记录是扁平列表、没有轮次 id，只能靠
+  // 相邻关系归组：连续的 tool_record 收一组，碰到正文/思考气泡就切开——不同
+  // 历史回合靠这些气泡自然分隔，不能按「轮」把所有历史工具糊成一组。
+  function lastToolContent() {
+    var kids = messages.children;
+    for (var i = kids.length - 1; i >= 0; i--) {
+      var el = kids[i];
+      if (el.id === "artifact-tray" || el.classList.contains("artifact-inline")) continue;
+      return el;
+    }
+    return null;
+  }
+
+  // 组头聚合状态：N 张卡里数 running/failed，头部一句话说清全组在干嘛。
+  // 折叠策略：用户在跑（有 running）就展开，让用户看到实时进度；全部终态
+  // （完成/失败/取消）后自动收成一枚「工具调用 ×N」标签。用户手动点过
+  // （userToggled）就不抢他的选择。
+  function updateGroupHead(group) {
+    var cards = group._body.children;
+    var n = cards.length, running = 0, failed = 0, cur = "";
+    for (var i = 0; i < n; i++) {
+      if (cards[i].classList.contains("running")) { running++; cur = cards[i]._name.textContent; }
+      else if (cards[i].classList.contains("failed")) failed++;
+    }
+    group._count.textContent = "×" + n;
+    group.classList.remove("running", "done", "failed");
+    if (running > 0) {
+      group.classList.add("running");
+      group._st.textContent = "运行中 · " + cur;
+      if (group.dataset.userToggled !== "1") group.classList.remove("collapsed");
+    } else if (failed > 0) {
+      group.classList.add("failed");
+      group._st.textContent = failed + " 次失败 · 共 " + n + " 次调用";
+      if (group.dataset.userToggled !== "1") group.classList.add("collapsed");
+    } else {
+      group.classList.add("done");
+      group._st.textContent = "完成 · " + n + " 次调用";
+      if (group.dataset.userToggled !== "1") group.classList.add("collapsed");
+    }
+  }
+
+  function makeToolGroup() {
+    var group = document.createElement("div");
+    group.className = "bubble tool-group collapsed";  // 默认折叠：收成一枚标签
+    var head = document.createElement("div");
+    head.className = "tool-group-head";
+    head.title = "点击展开 / 折叠这一轮的工具调用";
+    var title = document.createElement("span");
+    title.className = "tool-group-title";
+    title.textContent = "工具调用";
+    var count = document.createElement("span");
+    count.className = "tool-group-count";
+    var st = document.createElement("span");
+    st.className = "tool-group-status";
+    var caret = document.createElement("span");
+    caret.className = "tool-group-caret";
+    caret.textContent = "▾";
+    head.appendChild(title); head.appendChild(count); head.appendChild(st); head.appendChild(caret);
+    head.addEventListener("click", function () {
+      group.classList.toggle("collapsed");
+      group.dataset.userToggled = "1";  // 用户点过就不再受自动状态摆布
+    });
+    var body = document.createElement("div");
+    body.className = "tool-group-body";
+    group.appendChild(head); group.appendChild(body);
+    group._count = count; group._st = st; group._body = body;
+    return group;
+  }
+
+  function appendToolCard(card) {
+    if (replaying) {
+      // 历史重放：相邻归组（连续的工具记录收一组，正文/思考天然切开不同轮）
+      var last = lastToolContent();
+      if (last && last.classList.contains("tool-group")) {
+        last._body.appendChild(card);
+        updateGroupHead(last);
+      } else if (last && last.classList.contains("tool")) {
+        var grp = makeToolGroup();
+        messages.replaceChild(grp, last);
+        grp._body.appendChild(last);
+        grp._body.appendChild(card);
+        updateGroupHead(grp);
+      } else {
+        messages.appendChild(card);
+      }
+      return;
+    }
+    // 实时流式：按「轮」归组 —— 同一用户回合的全部工具调用收进同一个标签，
+    // 中间隔着思考/正文气泡也算是同轮。
+    if (currentToolGroup) {
+      // 本轮组已成型（≥2 张）：直接并入，哪怕此刻 DOM 里上一条是思考气泡
+      currentToolGroup._body.appendChild(card);
+      updateGroupHead(currentToolGroup);
+      return;
+    }
+    if (currentRoundFirstCard) {
+      // 本轮第二张卡：把首张裸卡就地包成组（组顶替裸卡的 DOM 位）
+      var group = makeToolGroup();
+      messages.replaceChild(group, currentRoundFirstCard);
+      group._body.appendChild(currentRoundFirstCard);
+      group._body.appendChild(card);
+      updateGroupHead(group);
+      currentToolGroup = group;
+      currentRoundFirstCard = null;
+      return;
+    }
+    // 本轮首张卡：先裸挂，等出现第二张再升级成组（单调用不包壳）
+    messages.appendChild(card);
+    currentRoundFirstCard = card;
+  }
+
   function upsertTool(ev) {
     var id = ev.id || "";
     var card = id ? toolCards[id] : null;
@@ -1622,7 +1848,7 @@
       out.style.display = "none";
       card.appendChild(head); card.appendChild(out);
       card._name = name; card._kind = kind; card._st = st; card._out = out; card._caret = caret;
-      messages.appendChild(card);
+      appendToolCard(card);
       if (id) toolCards[id] = card;
     }
     if (ev.title) card._name.textContent = ev.title;
@@ -1660,6 +1886,9 @@
     if (ev.status === "completed") {
       extractArtifact(card, ev.output || "");
     }
+    // 卡片状态变了（新卡入组、running→done…），所在组的头部聚合状态同步刷新
+    var grp = card.closest(".tool-group");
+    if (grp) updateGroupHead(grp);
     // 活动标签的文案由 handle() 的 tool 分支统一更新，这里不能碰：
     // renderHistory 重放历史工具记录时也走 upsertTool，历史记录全是
     // completed —— 在这里发标签会给旧会话的结尾留下一颗永远在跳的
@@ -1828,6 +2057,20 @@
     trayEl = null; trayCount = null;  // 旧节点随 innerHTML 清空一起没
   }
 
+  // 新一轮开始（用户发消息）时调用：会话级产物清单按新一轮重算 —— 不把上一轮
+  // 的产物带进下一轮（用户要求「每轮产物只在该轮范围内，下一轮是全新的」）。
+  // 只清清单与计数、隐藏托盘，不 bump trayGen（同一会话，上一轮卡片迟到的
+  // file_info 仍要回填到它自己的卡片上），也不删节点（上一轮内联卡留在它自己
+  // 的区间里，由正常文档流锚定，不会串到下一轮）。
+  function clearRoundTray() {
+    artifacts = {};
+    trayOrder = [];
+    if (trayEl) {
+      trayEl.style.display = "none";
+      if (trayCount) trayCount.textContent = "0";
+    }
+  }
+
   function extractArtifact(card, output) {
     if (!output || card._artifact) return;  // 一张工具卡只标一个产物；事件重发不重画
     var m = ARTIFACT_RE.exec(output);
@@ -1836,12 +2079,12 @@
     card._artifact = p;
     // 消息流里只内联展示最新一个产物（对齐 WorkBuddy：只有目标产物挂卡），
     // 同一轮更早的产物降级 —— 工具输出里仍有路径，托盘清单里也都在。
+    // 卡片走正常文档流（不再用 order:9998 浮到整个会话底部），提取时先按
+    // 当前时刻 append 到消息流；轮末 done 时再 move 到本轮正文之后，这样它
+    // 既落在模型最终回复下面，又锚定在「产生它的那一轮」区间内 —— 下一轮
+    // 用户消息出现后，它自然留在上一轮，不会被浮到下一轮的最底下。
     if (turnInline && turnInline.row.isConnected) turnInline.row.remove();
     var built = buildArtifactRow(p);
-    // 挂到消息流末尾，**不塞进工具卡**：产物该在模型最终回复的下面
-    // （2026-10-09 用户反馈）。视觉顺序由 .artifact-inline 的 order:9998
-    // 保证 —— 正文气泡全是 order:0，工具完成时正文还没流出来也插不到
-    // 它前面；托盘 order:9999 仍在它下面。
     built.row.classList.add("artifact-inline");
     messages.appendChild(built.row);
     wireArtifact(built.row, built.pathEl, built.sizeEl, p, trayGen);
@@ -2504,6 +2747,11 @@
     messages.innerHTML = "";
     current = null;
     toolCards = {};
+    // 历史重放：走相邻归组（不同历史轮靠正文/思考气泡自然切开），不按实时「轮」
+    replaying = true;
+    currentToolGroup = null;
+    currentRoundFirstCard = null;
+    toolGroupBarrier = false;  // 历史重放自带相邻关系，不需要屏障
     resetTray();  // 会话级产物清单清空；下面重放 tool_record 时会重新注册进来
     clearPermissions();  // 切会话时旧弹窗对应的请求已经作废（协议层会回 cancelled）
     (history || []).forEach(function (m) {
@@ -2521,6 +2769,7 @@
       }
       addStaticBubble(m.role, m.content || "");
     });
+    replaying = false;  // 重放结束，后续实时事件恢复按「轮」归组
     if (autoScroll) scrollToBottom();
   }
 
@@ -2551,6 +2800,9 @@
       activeSession = r.session;
       current = null;
       toolCards = {};
+      toolGroupBarrier = false;
+      currentToolGroup = null;     // 新会话：本轮归组状态复位
+      currentRoundFirstCard = null;
       resetTray();  // 新会话没有产物；旧会话的清单不带走
       pendingBubble = null;  // 上面那句清空了 #messages，引用得跟着放掉
       messages.innerHTML = "";
@@ -3027,7 +3279,8 @@
   function welcomeSubmit() {
     if (busy || !started) return;
     var text = wInput.value.trim();
-    if (!text) return;
+    // 纯图片无文本也放行（submit() 里对「有图无文」已有同样的处理）
+    if (!text && !pendingImages.length) return;
     input.value = text;
     submit();
     wInput.value = "";
@@ -3414,8 +3667,19 @@
       b.textContent = ev.text;
       attachCopy(b);
       attachResend(b);
+      // 随消息发的图片：缩略图画在文本下方，点击新窗口看原图
+      if (ev.images && ev.images.length) renderUserImages(b, ev.images);
       if (autoScroll) scrollToBottom();
       toolCards = {};  // 新一轮，卡片表清空（id 理论上不冲突，防御性重置）
+      // 新一轮：本轮归组状态复位，下一轮的工具调用不会再缝进上一轮的标签
+      currentToolGroup = null;
+      currentRoundFirstCard = null;
+      toolGroupBarrier = true;
+      // 新一轮：上一轮的内联产物卡留在它自己的区间（走正常文档流，不浮到最底），
+      // 这里只放掉引用，避免本轮首个产物误删上轮卡片；会话级托盘按本轮重算，
+      // 不把上一轮产物带进下一轮（用户要求：每轮产物只在该轮范围内，下轮全新）。
+      turnInline = null;
+      clearRoundTray();
       setBusy(true);
       sendBtn.disabled = true;
       setStatus("connecting", "生成中…");
@@ -3485,6 +3749,14 @@
         attachCopy(current);  // 本轮回答定格：给气泡配上复制按钮
         current = null;
       }
+      // 一轮结束：把本轮最新内联产物卡归位到正文之后。它走正常文档流、done 时
+      // 才挪到末尾，于是稳稳落在本轮最终回复下面；下一轮用户消息之后的产物会
+      // 自然落在下一轮，不会再把上一轮的产物浮到最底（用户反馈：下一轮应是全新的）。
+      if (turnInline && turnInline.row.isConnected) {
+        if (trayEl && trayEl.isConnected) messages.insertBefore(turnInline.row, trayEl);
+        else messages.appendChild(turnInline.row);
+      }
+      turnInline = null;  // 释放引用：下轮首个产物不会误删本轮卡片
       var streamingThinks = messages.querySelectorAll(".bubble.thought.streaming");
       for (var ti = 0; ti < streamingThinks.length; ti++) {
         finishThought(streamingThinks[ti]);
@@ -3540,10 +3812,18 @@
   function submit() {
     if (busy || !started) return;
     var text = input.value.trim();
-    if (!text) return;
+    var imgs = pendingImages.slice();
+    if (!text && !imgs.length) return;
     input.value = "";
+    // 图片随文本一起走：清空待发列表（缩略图条一并消失），
+    // 气泡里的缩略图等服务端的 user 事件回来再画（同一条路径，不双份）。
+    pendingImages = [];
+    renderAttachStrip();
     autoSize();
-    api("/api/send", { method: "POST", body: { text: text } }).catch(function (e) {
+    api("/api/send", {
+      method: "POST",
+      body: { text: text, images: imgs.map(function (i) { return i.id; }) }
+    }).catch(function (e) {
       current = newBubble("error", "发送失败");
       appendText(current, String(e && e.message ? e.message : e));
       current = null;
@@ -3587,6 +3867,147 @@
     }
   });
   sendBtn.addEventListener("click", submit);
+
+  // ---- 图片附件：选 / 粘贴 / 拖拽 → /api/upload → 缩略图条 → 随 submit 发 id ----
+
+  var MAX_IMAGES = 4;
+  var MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+  function addPendingImages(files) {
+    var list = Array.prototype.slice.call(files || []);
+    list.forEach(function (f) {
+      if (busy) return;
+      if (pendingImages.length >= MAX_IMAGES) return;  // 一轮 4 张，够用了
+      if (!/^image\//.test(f.type || "")) return;       // 非图片静默忽略
+      if (f.size > MAX_IMAGE_BYTES) {
+        showToast("图片没加进来", "「" + (f.name || "图片") + "」超过 8MB 上限");
+        return;
+      }
+      // 本地先读 dataURL 画个占位缩略图（…表示上传中），上传成功后换服务端 url
+      var reader = new FileReader();
+      reader.onload = function () {
+        var placeholder = { id: null, url: String(reader.result), name: f.name, uploading: true };
+        pendingImages.push(placeholder);
+        renderAttachStrip();
+        api("/api/upload", {
+          method: "POST",
+          body: { data: String(reader.result), name: f.name, mime: f.type }
+        }).then(function (r) {
+          placeholder.uploading = false;
+          if (!r || !r.ok) {
+            removePending(placeholder);
+            showToast("图片上传失败", String((r && r.error) || "未知错误"));
+            return;
+          }
+          placeholder.id = r.id;
+          placeholder.url = r.url;  // 换成本机 /api/file/<id>，不再占内存
+          renderAttachStrip();
+        }).catch(function (e) {
+          removePending(placeholder);
+          showToast("图片上传失败", String(e && e.message ? e.message : e));
+        });
+      };
+      reader.readAsDataURL(f);
+    });
+  }
+
+  function removePending(item) {
+    var i = pendingImages.indexOf(item);
+    if (i >= 0) pendingImages.splice(i, 1);
+    renderAttachStrip();
+  }
+
+  function renderAttachStrip() {
+    // 同一份 pendingImages 渲染到两个条：聊天页 #attach-strip 和欢迎页
+    // #w-attach-strip（欢迎页有自己的 composer，且两处可能交替使用）。
+    var strips = [attachStrip, wAttachStrip];
+    strips.forEach(function (strip) {
+      strip.textContent = "";
+      pendingImages.forEach(function (img) {
+        strip.appendChild(buildThumb(img));
+      });
+    });
+  }
+
+  function buildThumb(img) {
+    var d = document.createElement("div");
+    d.className = "att-thumb" + (img.uploading ? " uploading" : "");
+    var im = document.createElement("img");
+    im.src = img.url;
+    im.alt = img.name || "图片";
+    d.appendChild(im);
+    var x = document.createElement("button");
+    x.type = "button";
+    x.className = "att-x";
+    x.textContent = "×";
+    x.title = "移除这张图";
+    x.addEventListener("click", function () { removePending(img); });
+    d.appendChild(x);
+    return d;
+  }
+
+  // 用户气泡里的已发送图片：点开新窗口看原图（/api/file/<id>）
+  function renderUserImages(bubble, urls) {
+    if (!urls || !urls.length) return;
+    var wrap = document.createElement("div");
+    wrap.className = "user-imgs";
+    urls.forEach(function (u) {
+      if (!u) return;
+      var im = document.createElement("img");
+      im.src = u;
+      im.alt = "发送的图片";
+      im.addEventListener("click", function () { window.open(u, "_blank"); });
+      wrap.appendChild(im);
+    });
+    bubble.appendChild(wrap);
+  }
+
+  attachBtn.addEventListener("click", function () {
+    if (busy) return;
+    fileInput.value = "";  // 允许重选同一张
+    fileInput.click();
+  });
+  // 欢迎页的 📎 走同一个隐藏 file input / 待发队列，发送路径也同一套
+  wAttachBtn.addEventListener("click", function () {
+    if (busy) return;
+    fileInput.value = "";
+    fileInput.click();
+  });
+  fileInput.addEventListener("change", function () {
+    addPendingImages(fileInput.files);
+  });
+
+  // 粘贴：截图后 Ctrl+V 直接进输入区（WorkBuddy 同款体验）。
+  // 主输入框和欢迎页输入框各绑一份（欢迎页是独立 textarea，且新会话第一眼看到的是它）。
+  function collectPasteFiles(e) {
+    var files = [];
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === "file") {
+        var f = items[i].getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length) { e.preventDefault(); addPendingImages(files); }
+  }
+  input.addEventListener("paste", collectPasteFiles);
+  wInput.addEventListener("paste", collectPasteFiles);
+
+  // 拖拽：图片文件拖到对话区/欢迎页任意位置都能加
+  ["dragover", "drop"].forEach(function (evName) {
+    composer.addEventListener(evName, function (e) {
+      e.preventDefault();
+      if (evName === "drop" && e.dataTransfer && e.dataTransfer.files.length) {
+        addPendingImages(e.dataTransfer.files);
+      }
+    });
+    welcomeBox.addEventListener(evName, function (e) {
+      e.preventDefault();
+      if (evName === "drop" && e.dataTransfer && e.dataTransfer.files.length) {
+        addPendingImages(e.dataTransfer.files);
+      }
+    });
+  });
 
   stopBtn.addEventListener("click", function () {
     if (!busy || !started) return;
@@ -3768,6 +4189,26 @@
       setStatus("error", "连不上本机服务（请用 forgeagent-gui 启动，别直接双击打开 html）");
     }
   );
+  // 自动化 UI 测试钩子（Electron harness 用）：只暴露引用，不改任何行为。
+  // 页面主逻辑全在闭包里，外部测试拿不到 upsertTool / messages —— 没这个
+  // 句柄就只能靠真实后端事件驱动，单测没法复刻「14 连工具调用」这类序列。
+  window.__faTest = {
+    upsertTool: upsertTool,
+    messages: messages,
+    getToolGroupBarrier: function () { return toolGroupBarrier; },
+    setToolGroupBarrier: function (v) { toolGroupBarrier = v; },
+    resetToolCards: function () { toolCards = {}; },
+    // 按轮归组的测试钩子：模拟「用户新一轮」复位，以及读取本轮状态
+    startNewRound: function () { toolCards = {}; currentToolGroup = null; currentRoundFirstCard = null; },
+    getRoundGroup: function () { return currentToolGroup; },
+    getRoundFirst: function () { return currentRoundFirstCard; },
+    setReplaying: function (v) { replaying = !!v; },
+    // 图片附件的测试钩子：注入假待发图 / 读数量 / 暴露两个输入框给欢迎页用例
+    addPendingImageMeta: function (meta) { pendingImages.push(meta); renderAttachStrip(); },
+    pendingCount: function () { return pendingImages.length; },
+    wInputEl: wInput,
+    setStarted: function (v) { started = !!v; },
+  };
 })();
 </script>
 </body>

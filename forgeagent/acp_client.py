@@ -29,6 +29,7 @@ SDK 是可选的：装了就用它的方法名常量表，没装就退回硬编�
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shlex
@@ -221,6 +222,43 @@ M_UPDATE = _method(CLIENT_METHODS, ("session_update",), "session/update")
 M_PERMISSION = _method(
     CLIENT_METHODS, ("session_request_permission",), "session/request_permission"
 )
+
+# 附件白名单的 MIME 兜底：扩展名 -> MIME。图片类型之外的附件这里一律不收
+# （GUI 上传入口同样限定了扩展名，双保险）。
+_IMAGE_MIME_BY_EXT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
+_MIME_BY_EXT = {**_IMAGE_MIME_BY_EXT, ".svg": "image/svg+xml"}
+
+
+def _read_image_b64(path: str, mime: str = "") -> tuple[str, str] | None:
+    """读图片文件，返回 (base64, mime)；读不到/不是图片返回 None。
+
+    mime 由调用方传入（上传时已知），缺了就按扩展名猜；两边都拿不到
+    按 image/png 兜底（大多数视觉模型对 mime 不敏感，data URI 前缀错一点
+    总好过整张图被丢掉）。
+    """
+    p = Path(path)
+    if not mime:
+        mime = _MIME_BY_EXT.get(p.suffix.lower(), "image/png")
+    try:
+        data = p.read_bytes()
+    except OSError as exc:
+        # 读不到就不带这张图，别让整轮对话跟着失败；stderr 只用于排查，
+        # 不进 stdout（stdout 是纯 JSON-RPC 管线）。
+        try:
+            sys.stderr.write(f"[acp] 读取图片失败 {path}: {exc}\n")
+        except Exception:  # noqa: BLE001 - 日志失败不该影响主流程
+            pass
+        return None
+    if not data:
+        return None
+    return base64.b64encode(data).decode("ascii"), mime
 
 
 class AcpClient:
@@ -421,19 +459,40 @@ class AcpClient:
 
     # ---- 核心 ----
 
-    async def prompt(self, text: str) -> AsyncIterator[Turn]:
+    async def prompt(
+        self, text: str, images: list[dict] | None = None
+    ) -> AsyncIterator[Turn]:
         """发一轮，持续 yield 就地更新的 Turn。
 
         用 async generator 是因为 UI 要在生成过程中实时重绘；yield 出去的是
         同一个对象，UI 直接整体重绘即可，不用管增量。
+
+        `images` 是可选的附件列表，每项 {"path": 本地文件绝对路径, "mime": MIME}。
+        ACP 的 ImageContentBlock 要求 data 必填（base64），所以在这里读文件、
+        编 base64 —— 之前的链路（GUI→server→bridge）传的都是**路径**，
+        到这条 ACP 管线上才落成字节（本机管道，体积不是问题）。
         """
+        blocks: list[dict] = []
+        text = (text or "").strip()
+        if text:
+            blocks.append({"type": "text", "text": text})
+        for img in images or []:
+            path = str(img.get("path") or "") if isinstance(img, dict) else str(img)
+            mime = str(img.get("mime") or "") if isinstance(img, dict) else ""
+            pair = _read_image_b64(path, mime)
+            if pair is None:
+                continue
+            b64, mime = pair  # 注意是 (base64, mime) 元组，别整个塞给 data
+            blocks.append({"type": "image", "data": b64, "mimeType": mime})
+        if not blocks:
+            blocks.append({"type": "text", "text": text or "（空消息）"})
         turn = Turn(user=text)
         task = asyncio.ensure_future(
             self._call(
                 M_PROMPT,
                 {
                     "sessionId": self.session_id,
-                    "prompt": [{"type": "text", "text": text}],
+                    "prompt": blocks,
                 },
             )
         )
@@ -653,8 +712,14 @@ class AcpClient:
 
         if "error" in msg:
             err = msg["error"]
+            # data 里常带对端的具体原因（如 acp SDK 的 ValidationError.errors()），
+            # 丢掉它排障就只剩一句 Invalid params —— 必须一起带出来。
+            data = err.get("data")
+            detail = ""
+            if data is not None:
+                detail = " | " + json.dumps(data, ensure_ascii=False)[:2000]
             raise AcpError(
-                f"{err.get('message', '未知错误')} (code={err.get('code')})"
+                f"{err.get('message', '未知错误')} (code={err.get('code')}){detail}"
             )
         return msg
 

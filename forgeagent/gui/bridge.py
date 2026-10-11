@@ -279,17 +279,28 @@ class Bridge:
         self._emit(type="mode", mode_id=mode_id)
         return {"ok": True, "mode_id": mode_id}
 
-    def send(self, text: str) -> dict:
-        """发一轮。立即返回，真正的流式在后台线程跑。"""
+    def send(self, text: str, images: list[dict] | None = None) -> dict:
+        """发一轮。立即返回，真正的流式在后台线程跑。
+
+        `images` 是可选附件（GUI 上传接口的返回值原样传回）：
+            [{"path": 本地绝对路径, "mime": "image/png", "url": "/api/file/<id>"}, ...]
+        path 给 ACP 层读字节用；url 只进 user 事件，给前端画缩略图。
+        """
         text = (text or "").strip()
-        if not text:
+        metas = [m for m in (images or []) if isinstance(m, dict) and m.get("path")]
+        if not text and not metas:
             return {"ok": False, "error": "空消息"}
         if self._busy:
             return {"ok": False, "error": "上一轮还没结束"}
 
         self._busy = True
-        self._emit(type="user", text=text)
-        self._submit(self._stream(text))
+        urls = [m.get("url") for m in metas if m.get("url")]
+        if urls:
+            # 有图才带 images 键：无图的 user 事件保持旧形状（测试/消费方零感知）
+            self._emit(type="user", text=text, images=urls)
+        else:
+            self._emit(type="user", text=text)
+        self._submit(self._stream(text, images=metas))
         return {"ok": True}
 
     def cancel(self) -> dict:
@@ -426,7 +437,7 @@ class Bridge:
 
     # ---- 内部 ----
 
-    async def _stream(self, text: str) -> None:
+    async def _stream(self, text: str, images: list[dict] | None = None) -> None:
         """消费 prompt()，把增量拆成 delta 事件。
 
         只发新增的部分而不是每次发全量 —— 否则长回答的传输量是 O(n²)。
@@ -435,7 +446,7 @@ class Bridge:
         seen_tools: dict[str, tuple[str, str]] = {}
         turn: Turn | None = None
         try:
-            async for t in self._client.prompt(text):
+            async for t in self._client.prompt(text, images=images):
                 turn = t
                 for role, value in (
                     ("assistant", t.text),

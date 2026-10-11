@@ -26,6 +26,7 @@ import os
 import re
 import secrets
 import subprocess
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import sys
@@ -472,6 +473,13 @@ class UiServer:
         # 测试可注入假的，完全不碰磁盘。
         self.sessions = sessions if sessions is not None else SessionsSource()
         self.token = secrets.token_hex(16)
+        # ---- 图片附件（「发图给模型识别」用）----
+        # 上传落系统临时目录，id -> 元数据只在内存里：进程重启后旧 id 失效
+        # （文件还在但查不到），重新选图即可，不值得为缩略图做持久化。
+        # 扩展名白名单与 ACP 侧 _MIME_BY_EXT 一致，双重限定。
+        self.upload_dir = Path(tempfile.gettempdir()) / "forgeagent-uploads"
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        self.uploads: dict[str, dict] = {}
         self._host = host
         self._httpd = ThreadingHTTPServer((host, port), _Handler)
         self._httpd.daemon_threads = True
@@ -605,6 +613,74 @@ class _Handler(BaseHTTPRequestHandler):
     def _authed(self) -> bool:
         return self.headers.get("X-ForgeAgent-Token") == self._owner.token
 
+    # ---- 图片附件：上传 / 认领 ----
+
+    # 允许上传的图片扩展名（与 acp_client._MIME_BY_EXT 对齐）
+    _UPLOAD_EXTS = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }
+    # 8MB：一张截图/照片绰绰有余，也兜住「手滑传了段视频」这种事故
+    _UPLOAD_MAX_BYTES = 8 * 1024 * 1024
+
+    def _handle_upload(self, body: dict) -> None:
+        """收一张图（base64），写进临时目录，返回 {id, url, path, mime}。
+
+        安全边界：扩展名白名单 + 大小上限 + 随机文件名（用户给的文件名只
+        用来猜扩展名，不落盘）。写完后注册进 self._owner.uploads，
+        /api/send 按 id 认领、/api/file/<id> 按 id 服务，路径不出服务端。
+        """
+        data_url = str(body.get("data") or "")
+        # dataURL（data:image/png;base64,xxxx）和裸 base64 都收
+        b64 = data_url.split(",", 1)[1] if data_url.startswith("data:") else data_url
+        if not b64:
+            return self._fail(400, "缺少图片数据")
+        import base64 as _b64
+
+        try:
+            raw = _b64.b64decode(b64, validate=False)
+        except Exception:  # noqa: BLE001 - 解不开就当坏数据
+            return self._fail(400, "图片数据不是合法 base64")
+        if not raw:
+            return self._fail(400, "图片内容为空")
+        if len(raw) > self._UPLOAD_MAX_BYTES:
+            return self._fail(413, "图片超过 8MB 上限")
+
+        # 扩展名：优先 body.mime（前端 FileReader 一定有），退回按文件名猜
+        mime = str(body.get("mime") or "")
+        ext = ""
+        name = str(body.get("name") or "")
+        if "." in name:
+            ext = Path(name).suffix.lower()
+        if mime not in self._UPLOAD_EXTS.values():
+            guessed = self._UPLOAD_EXTS.get(ext)
+            if guessed:
+                mime = guessed
+            elif mime:
+                return self._fail(415, f"不支持的图片类型: {mime}")
+            else:
+                return self._fail(415, f"不支持的图片扩展名: {ext or name or '(无)'}")
+
+        iid = secrets.token_hex(8)
+        dest = self._owner.upload_dir / f"{iid}{ext}"
+        try:
+            dest.write_bytes(raw)
+        except OSError as exc:
+            return self._fail(500, f"写图片文件失败: {exc}")
+        meta = {
+            "id": iid,
+            "path": str(dest),
+            "mime": mime,
+            "url": f"/api/file/{iid}",
+            "name": name,
+        }
+        self._owner.uploads[iid] = meta
+        return self._json({"ok": True, **meta})
+
     # ---- 产物卡片：解析 / 打开会话里生成的文件 ----
 
     def _artifact_path(self, raw: object) -> Path | None:
@@ -643,7 +719,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._file("index.html")
 
         if path.startswith("/api/"):
-            if not self._authed():
+            # /api/file/<id> 例外：<img src> 发不了自定义请求头，鉴权靠 id 本身
+            # （secrets.token_hex(8)，不可猜、只在本进程内存里登记）。其余
+            # /api/* 照旧过 token。
+            if not path.startswith("/api/file/") and not self._authed():
                 return self._fail(401, "token 不对")
             return self._api_get(path, q)
 
@@ -664,7 +743,22 @@ class _Handler(BaseHTTPRequestHandler):
 
         if u.path == "/api/send":
             text = str(body.get("text") or "")
-            return self._json(bridge.send(text))
+            # 附件按 id 认领：前端只回传上传接口发过的 id，路径永远由服务端
+            # 解析 —— 客户端瞎编的 id 查不到就跳过，不存在路径注入。
+            metas: list[dict] = []
+            ids = body.get("images")
+            if isinstance(ids, list):
+                for iid in ids:
+                    meta = self._owner.uploads.get(str(iid or ""))
+                    if meta:
+                        metas.append(meta)
+            return self._json(bridge.send(text, images=metas))
+
+        # ---- 图片上传：base64 JSON 进、临时文件 + id 出 ----
+        # 前端 FileReader 读成 dataURL 再 POST，不做 multipart（标准库解析
+        # multipart 是一坨），localhost 上这点 base64 开销无所谓。
+        if u.path == "/api/upload":
+            return self._handle_upload(body)
 
         if u.path == "/api/state":
             bridge.ui_report(body.get("state") if isinstance(body.get("state"), dict) else body)
@@ -1003,6 +1097,19 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/hello":
             return self._json({"ok": True, "token_ok": True})
+
+        # ---- 附件图片：只服务本进程上传过的（id 认领），别无来源 ----
+        if path.startswith("/api/file/"):
+            iid = path[len("/api/file/"):]
+            meta = self._owner.uploads.get(iid)
+            if meta is None:
+                return self._fail(404, "没有这个附件")
+            p = Path(meta["path"])
+            try:
+                data = p.read_bytes()
+            except OSError:
+                return self._fail(404, "附件文件已丢失")
+            return self._send(200, data, str(meta.get("mime") or "image/png"))
 
         # ---- 自定义模型 profile ----
         if path == "/api/models":

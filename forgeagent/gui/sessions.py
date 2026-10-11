@@ -30,6 +30,32 @@ DEFAULT_DB_PATH = Path.home() / ".agentd" / "sessions.db"
 _MODEL_ONLY_ROLES = frozenset({"tool", "system"})
 
 
+def _content_display(c: str | None) -> str:
+    """content 冗余列 → 展示文本。
+
+    多模态消息（用户发图）的 content 冗余列是 JSON 数组字符串。展示只要
+    文本：取 text 块、图片换 [图片] 占位 —— base64 不进任何 UI 接口
+    （一张图几百 KB，侧栏/回放整段历史会明显变卡）。普通字符串原样返回。
+    """
+    content = c or ""
+    if not content.startswith("["):
+        return content
+    try:
+        parts = json.loads(content)
+    except ValueError:
+        return content
+    if not isinstance(parts, list):
+        return content
+    texts = [
+        str(pp.get("text") or "")
+        for pp in parts
+        if isinstance(pp, dict) and pp.get("type") == "text"
+    ]
+    if any(isinstance(pp, dict) and pp.get("type") == "image_url" for pp in parts):
+        texts.append("[图片]")
+    return "\n".join(t for t in texts if t)
+
+
 def _has_tool_calls(payload: str | None) -> bool:
     """这条 assistant 是"举手要调工具"吗 —— 是的话 UI 不该给它一个气泡。
 
@@ -154,10 +180,10 @@ class SessionsSource:
             if sid in hidden:
                 continue  # 已被用户"删除"（隐藏）的会话不出现在侧栏
             aliased = aliases.get(sid)
-            title = (first or "").strip().split("\n", 1)[0] or "（空会话）"
+            title = _content_display(first).strip().split("\n", 1)[0] or "（空会话）"
             if aliased:
                 title = aliased  # 用户改过的名字优先
-            preview = (last or "").strip().replace("\r\n", "\n").split("\n", 1)[0]
+            preview = _content_display(last).strip().replace("\r\n", "\n").split("\n", 1)[0]
             out.append(
                 {
                     "id": sid,
@@ -222,7 +248,8 @@ class SessionsSource:
             if r in _MODEL_ONLY_ROLES:
                 # 给模型看的行（见 docstring）：UI 回放一律跳过
                 continue
-            item = {"role": r, "name": n, "content": (c or "")}
+            content = _content_display(c)
+            item = {"role": r, "name": n, "content": content}
             if r == "tool_record":
                 try:
                     item["tool_record"] = (json.loads(p) or {}).get("tool_record") or {}

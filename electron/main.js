@@ -30,6 +30,14 @@ if (process.env.FORGEAGENT_CDP_PORT) {
   );
 }
 
+// 这台机器 GPU/driver 有坑（WebView2、Chromium 渲染进程都会崩，窗口跑一会儿就
+// exit 1）。强制软件渲染绕开 GPU —— 和 UI harness 里 --disable-gpu 同款，已验证
+// 渲染/截图稳定。普通机器上这一行只是牺牲一点流畅度，无副作用，放心留着。
+app.commandLine.appendSwitch("disable-gpu");
+// 允许 CDP 从本机任意 origin 接入（远程调试用）。只要开了 remote-debugging-port
+// 就需要这一条，否则浏览器/脚本握手会被 403 拒掉。
+app.commandLine.appendSwitch("remote-allow-origins", "*");
+
 // electron/ 的父目录就是项目根（forgeagent 包在这里，cwd 设到这才能让 `python -m forgeagent.gui` 导入到包）
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 

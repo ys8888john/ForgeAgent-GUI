@@ -91,7 +91,7 @@ class _FakeClient:
         self.session_id = "sess_new789012"
         return self.session_id
 
-    async def prompt(self, text: str):
+    async def prompt(self, text: str, images=None):
         if self._fail_prompt:
             raise RuntimeError("prompt 炸了")
         turn = Turn(user=text)
@@ -396,7 +396,7 @@ def test_thought_and_error_go_to_their_own_roles():
     """思考 / 正文 / 错误要分角色，界面才能分开渲染。"""
 
     class _MixedClient(_FakeClient):
-        async def prompt(self, text: str):
+        async def prompt(self, text: str, images=None):
             turn = Turn(user=text)
             turn.thought = "先想想"
             yield turn
@@ -425,7 +425,7 @@ def test_notice_reaches_frontend_as_its_own_role():
     """
 
     class _NoticeClient(_FakeClient):
-        async def prompt(self, text: str):
+        async def prompt(self, text: str, images=None):
             turn = Turn(user=text)
             turn.notice = "上下文超出预算，省略了较早的 3 条历史消息"
             yield turn
@@ -451,7 +451,7 @@ def test_notice_reaches_frontend_as_its_own_role():
 class _ToolClient(_FakeClient):
     """吐一个带工具调用的 Turn：先运行中，再完成（带输出）。"""
 
-    async def prompt(self, text: str):
+    async def prompt(self, text: str, images=None):
         turn = Turn(user=text)
         tool = ToolCallState(
             call_id="c1", title="echo", kind="other", status="in_progress"
