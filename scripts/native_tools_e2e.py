@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import http.server
 import json
 import os
@@ -53,6 +54,7 @@ from forgeagent.acp_client import AcpClient  # noqa: E402
 OK, BAD = "  [OK]", "  [FAIL]"
 FILES_PROMPT = "读一下文件并写点东西"
 WEB_PROMPT = "搜一下再打开一个页面"
+IMAGE_PROMPT = "帮我生成一张小鸭子游泳的照片"
 TARGET = "notes.txt"
 
 
@@ -93,6 +95,9 @@ _FAKE_PAGE = """<!doctype html>
 
 
 class _FakeWebHandler(http.server.BaseHTTPRequestHandler):
+    # image 场景断言用：记录最近一次 /images/generations 的请求体
+    last_image_request: dict | None = None
+
     def do_GET(self) -> None:  # noqa: N802 —— BaseHTTPRequestHandler 规定的名字
         path = urllib.parse.urlparse(self.path).path
         if path == "/search":
@@ -108,6 +113,31 @@ class _FakeWebHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urllib.parse.urlparse(self.path).path
+        if path != "/v1/images/generations":
+            self.send_error(404, "fake backend: POST 只认 /v1/images/generations")
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        except ValueError:
+            payload = {}
+        _FakeWebHandler.last_image_request = payload
+        # 1x1 像素的真 PNG（不会被打成图片查看器打开也无所谓，e2e 只验落盘）
+        raw = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQAB"
+            "h6FO1AAAAABJRU5ErkJggg=="
+        )
+        body = json.dumps(
+            {"data": [{"b64_json": base64.b64encode(raw).decode("ascii")}]}
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, *args: object) -> None:
         """默认实现往 stderr 打访问日志，会淹没 e2e 输出；静音。"""
@@ -174,6 +204,24 @@ def build_web_script(page_url: str) -> str:
             },
             {"tool_calls": [{"name": "web_fetch", "arguments": {"url": page_url}}]},
             {"text": "联网也通了"},
+        ],
+        ensure_ascii=False,
+    )
+
+
+def build_image_script() -> str:
+    """图片场景：对话里说「生成一张…」→ generate_image → 收尾正文。"""
+    return json.dumps(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "name": "generate_image",
+                        "arguments": {"prompt": "一只游泳的小鸭子", "size": "1024x1024"},
+                    }
+                ]
+            },
+            {"text": "图片生成好了"},
         ],
         ensure_ascii=False,
     )
@@ -477,6 +525,104 @@ async def run_web(agentd_repo: Path) -> int:
 
 
 # --------------------------------------------------------------------------
+# 场景三：图片生成（离线：本地假图像接口）
+# --------------------------------------------------------------------------
+
+
+async def run_image(agentd_repo: Path) -> int:
+    with FakeWeb() as fake, tempfile.TemporaryDirectory(
+        prefix="forgeagent-image-e2e-"
+    ) as td:
+        work = Path(td)
+        extra_env = {
+            # 把图像接口指到本地假后端 —— 全链路离线、可复现。
+            # _image_conf 走 boot.env_value：优先级链里有「启动时环境变量快照」，
+            # 所以给子进程的 env 直接生效，不需要热配置文件。
+            "AGENTD_IMAGE_BASE_URL": f"http://127.0.0.1:{fake.port}/v1",
+            "AGENTD_IMAGE_API_KEY": "fake-key-e2e",
+            "AGENTD_IMAGE_MODEL": "glm-image",
+            # agentd 子进程会继承 HTTP_PROXY（本机会把所有出网导给本地代理），
+            # 不排除环回的话，连 http://127.0.0.1 的假后端也会被代理掉。
+            "NO_PROXY": "127.0.0.1,localhost",
+            "no_proxy": "127.0.0.1,localhost",
+        }
+
+        section(f"第 1 跳：拉起 agentd（假图像接口 127.0.0.1:{fake.port}/v1）")
+        turn, logs, seen = await _run_turn(work, build_image_script(), extra_env, IMAGE_PROMPT)
+        if turn is None:
+            return 1
+
+        if turn.error:
+            print(f"{BAD} agentd 报错：{turn.error}")
+            return 1
+
+        section("第 2 跳：工具卡片状态（GUI reducer）")
+        _print_cards(turn.tools)
+
+        by_title = {t.title: t for t in turn.tools}
+        ok = True
+
+        gi = by_title.get("generate_image")
+        if gi is None:
+            print(f"{BAD} 没有 generate_image 的工具卡片")
+            ok = False
+        else:
+            if gi.kind != "other":
+                print(f"{BAD} generate_image 的 kind 应为 'other'，实为 {gi.kind!r}")
+                ok = False
+            if gi.status != "completed":
+                print(f"{BAD} 状态应为 completed，实为 {gi.status!r}（输出：{gi.output[:160]!r}）")
+                ok = False
+            else:
+                # 跨仓库契约：输出开头必须是「已新建 <路径>（」，GUI 靠它提取产物路径
+                if not gi.output.startswith("已新建 "):
+                    print(f"{BAD} 输出应以「已新建 <路径>」开头（ARTIFACT_RE 靠它提产物），实为：{gi.output[:120]!r}")
+                    ok = False
+                else:
+                    path = Path(gi.output.split("（")[0].removeprefix("已新建 ").strip())
+                    if not path.is_file():
+                        print(f"{BAD} 产物文件不存在：{path}")
+                        ok = False
+                    elif path.parent.name != "imagegen":
+                        print(f"{BAD} 产物应落在 tool_results/imagegen 下，实为：{path}")
+                        ok = False
+                    else:
+                        print(f"{OK} 产物已落盘：{path}（{path.stat().st_size} 字节）")
+                if "glm-image" not in gi.output or "1024x1024" not in gi.output:
+                    print(f"{BAD} 输出应带尺寸与模型名（用户要能看懂用了什么），实为：{gi.output[:160]!r}")
+                    ok = False
+
+        # 假后端真的被调到了，且参数是工具传的
+        req = _FakeWebHandler.last_image_request or {}
+        if req.get("model") != "glm-image" or req.get("prompt") != "一只游泳的小鸭子":
+            print(f"{BAD} 假图像接口收到的请求不对：{req}")
+            ok = False
+        else:
+            print(f"{OK} 假图像接口收到请求：model={req.get('model')} size={req.get('size')}")
+
+        section("第 3 跳：图片生成必须免审批")
+        if seen:
+            print(f"{BAD} 不该弹审批（对话里一句话直接出图），实际弹了 {len(seen)} 个")
+            ok = False
+        else:
+            print(f"{OK} 全程 0 次审批")
+
+        section("第 4 跳：最终正文")
+        print(f"{OK} 正文：{turn.text!r}")
+        if not turn.text:
+            print(f"{BAD} 正文为空")
+            ok = False
+
+        if ok:
+            print("\n全通：脚本回放 → ACP → agentd generate_image → 本地假图像接口 → 产物落盘 → 界面 reducer")
+        else:
+            print("\n失败，agentd 日志末尾：")
+            for line in (logs or [])[-15:]:
+                print(f"       | {line}")
+        return 0 if ok else 1
+
+
+# --------------------------------------------------------------------------
 
 
 def main() -> int:
@@ -488,9 +634,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--scenario",
-        choices=("files", "web"),
+        choices=("files", "web", "image"),
         default="files",
-        help="files=读写+审批（默认）；web=联网搜索/抓取（离线跑本地假后端）",
+        help="files=读写+审批（默认）；web=联网搜索/抓取（离线跑本地假后端）；"
+             "image=对话生成图片（离线跑本地假图像接口）",
     )
     parser.add_argument(
         "--deny",
@@ -504,6 +651,8 @@ def main() -> int:
     repo = Path(args.agentd_repo)
     if args.scenario == "web":
         return asyncio.run(run_web(repo))
+    if args.scenario == "image":
+        return asyncio.run(run_image(repo))
     return asyncio.run(run_files(repo, allow=not args.deny))
 
 

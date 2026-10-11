@@ -402,6 +402,7 @@ AGENTD_TOOLS_APPROVE=none forgeagent  # 全放行（仅无人值守场景，慎�
 python scripts/native_tools_e2e.py                    # files：允许，文件真被写出来
 python scripts/native_tools_e2e.py --deny             # files：拒绝，文件绝不能存在
 python scripts/native_tools_e2e.py --scenario web     # web：联网工具（离线可跑）
+python scripts/native_tools_e2e.py --scenario image   # image：图片生成（离线可跑）
 ```
 
 它给 agentd 塞回放脚本，让"模型"依次调 `read_file` + `glob`（不该弹审批）、
@@ -413,81 +414,97 @@ read/search/edit、允许时文件真的落盘 / 拒绝时文件绝不存在、�
 `kind` 是 `search`/`fetch`、卡片要走成中文标签、`count` 真截断了、HTML 真被剥成
 了纯文本，以及**全程 0 次审批**。
 
+`--scenario image` 验的是对话框出图那条链路：脚本在自己进程里起一个假的
+`POST /v1/images/generations`（真 socket、真 PNG 字节），让"模型"回一句
+`帮我生成一张小鸭子游泳的照片`，然后断言 `generate_image` 卡片 `kind=other`、
+状态 `completed`、输出以 `已新建 ` 开头、文件真落盘、假接口收到的 model/size 正确，
+以及**全程 0 次审批**。
+
 **它是离线跑的**，别被"联网"两个字误导：脚本在自己进程里起一个假的搜索 / 网页
 后端（真 socket、真 HTML 响应），再用 `AGENTD_SEARCH_ENDPOINT` 把 agentd 的搜索
 后端指过去。真正"Bing 的页面结构还认得出来吗"那一问由 agentd 自己的
 `tests/test_web_tools_live.py` 负责（那个才需要出网）。
 
-### 图片生成
+### 图片生成：在对话框里直接说
 
-参考 WorkBuddy 的方案，**独立**于 agentd 做了一套图片生成：不依赖 agent 连通性、
-不走 ACP、不发工具调用，而是直接调一个 OpenAI 兼容的 `images/generations` 接口，
-把结果以"用户气泡 + 缩略图网格"的形式渲染进当前会话，缩略图可点开大图、下载、
-或一键在文件管理器里打开。
+**没有独立入口。** 早期版本在输入栏旁做了一个 🎨 面板，绕开 agentd 直接打图像接口
+——结果用户说一句"帮我生成一张小鸭子游泳的照片"时主模型毫无反应，而且生成出来的图
+是个孤立面板，不进会话、不进历史。现在改成**走工具**：
 
-**为什么要和 agent 解耦。** 图片生成是纯本地能力——凭据来自你自己的模型配置、
-渲染发生在前端、和"有没有连上 agentd、有没有配 LLM"完全无关。WorkBuddy 把图片
-生成做成这种"独立工具"：哪怕 agent 进程没起来，按钮照样能点、照样出图。这里也照此
-设计，点 🎨 不要求任何 agent 状态。
+```
+对话框："帮我生成一张小鸭子游泳的照片"
+  → 主模型判意图 → tool_call generate_image(prompt=…, size=…)
+  → agentd 打 OpenAI 兼容的 images/generations
+  → 字节落到 tool_results_root()/imagegen/image_<ts>_<rand>.png
+  → 工具输出 "已新建 <绝对路径>（1024x1024，37KB，模型 glm-image）。…"
+  → 界面按产物契约把这句挖出来，渲染成产物卡片（可下载 / 在文件夹打开）
+```
 
-**怎么用：**
+**图片产物带内联缩略图。** 光一个文件路径不算"看见图"，所以产物卡片对图片扩展名
+（png/jpg/jpeg/gif/webp/bmp/svg）会再调 `POST /api/artifact_preview` 把字节拉回来，
+以 `data:` URL 直接长在卡片下面（≤12MB，非图片扩展名一律拒绝）。这个接口**带鉴权**
+（正常 token 校验的 POST，前端 fetch 后自己转 data URL），跟 `/api/file/<id>` 那种
+为 `<img src>` 被迫免 token 的路数刻意不同 —— 产物路径没有 id 可认领，免鉴权等于
+给任意能打开本页面的脚本一张读图门票。白名单仍然是「当前空间目录 + tool_results」，
+所以最坏情况也只是"读一张自己会话里生成的图"。
 
-- 输入栏右侧的 🎨 按钮（`#img-gen-btn`），或欢迎页底部的「🎨 生成图片」按钮
-  （`#w-img-gen`）—— 两个入口开同一个面板。
-- 面板里填：
-  - **提示词**：要画什么（必填，空了会被拦下并提示）。
-  - **服务商（provider）**：下拉选一个「模型管理」里配好的 `openai_compat` 配置
-    （见下）。若根本没有 `openai_compat` 配置，生成按钮会被禁用并提示先去配一个；
-    若没手动选，面板会默认挑列表里第一个可用的。
-  - **图像模型**：默认沿用所选「服务商」的模型（来自该 profile 的
-    `AGENTD_OPENAI_MODEL`），也可手动改成其它（如 `dall-e-3` / `cogview-3-plus`）；
-    若服务商没设模型、这里也留空，后端会明确报错"未指定图像模型"，不会半路静默失败。
-  - **尺寸**：`1024x1024` / `1024x1792` / `1792x1024` / `512x512` / `768x1344` /
-    `864x1152`，默认 `1024x1024`。
-  - **数量**：1–4 张，默认 1。
-- 点「生成」，后端拉接口成功后返回一个**用户气泡**：头部是提示词，下面是缩略图
-  网格。每张图：点缩略图开**灯箱大图**（`#lightbox`）；有「下载」直链
-  （`/api/image/<id>`，base64 落盘后 HTTP 再读回）；还有「在文件夹打开」按钮，
-  后端 `POST /api/open_path` 调系统文件管理器定位到落盘文件。
+所以这一段**前端没有专属代码**：没有 🎨 按钮、没有面板、没有灯箱。渲染走的是
+`write_file` / `make_xlsx` 那条既有的产物卡片路径（`ARTIFACT_RE` 正则，见下）。
+代价是"出图"依赖主模型能判出意图、且 `AGENTD_IMAGE_*` 配好了；好处是它进了会话
+历史、能被后续对话引用、也和其它产物长得一样。
 
-**凭据复用（关键）。** 图片生成**不另起一套密钥体系**，直接吃「模型管理」里已有的
-`openai_compat` 配置：面板"服务商"下拉就是从 `models.json` 里筛出带
-`AGENTD_OPENAI_API_KEY` 的 profile（`list_image_profiles()`），把它们当成图片接口
-的 base_url / 鉴权头。所以只要某处配过一个 OpenAI 兼容的 LLM（OpenAI 或任意兼容
-端点），图片生成立刻能用，无需二次填密钥。没配的话页面会明确提示，而不是报错在
-半路。Ollama / fake / script 这类没有图像接口的 profile 不会出现在下拉里。
+`generate_image` 是 agentd 的原生工具，`kind=other`、**不弹审批**（默认 `native`
+策略下 `needs_approval` 对非写非执行类返回 False）。端到端脚本会断言全程 0 次审批。
 
-**配置落盘。** 当前选的服务商 / 模型 / 尺寸 / 数量存在 `~/.agentd/gui/imagegen.json`
-（`profile_id` / `model` / `size` / `n`），下次开面板自动回填；选中的 provider 若被
-改得没了 key，打开面板会标记为"未选"并提示重选。
+### 多媒体模型设置
 
-**接口（token 校验同主服务，但 `/api/image/<id>` 免 token）。** 因为 `<img>` 的
-`src` 带不了 `X-ForgeAgent-Token` 头，所以读图接口跟 `/api/file/<id>` 一样从鉴权里
-豁免——只服务本进程登记过的 id，别无来源：
+主模型不一定是全能的：本机 qwen3.5 看不了图，`glm-4.5-air` 画不了图。与其逼用户换
+主模型，不如在「模型管理」里给这两件事各指定一个**专用子模型** —— 和 agentd 的
+视觉转译层同一套思路：
+
+> 模型管理 → **多媒体模型** → 默认的图像处理模型 / 默认的图像生成模型 → 保存
+
+填的只是**模型名**（如 `glm-4.6v` / `glm-image`）。端点与密钥**不让你再填一遍**：
+后端从当前 profile 自己的 `AGENTD_OPENAI_*` / `AGENTD_ZHIPU_*` / `AGENTD_MIMO_*`
+推导出 `AGENTD_{VISION,IMAGE}_BASE_URL` 与 `_API_KEY` 一起写进该 profile 的
+`env`（Ollama profile 则推 `AGENTD_OLLAMA_HOST`，并且图像端点补 `/v1`）。保存后
+立刻重写 `hotenv.json`，**下一轮对话生效，不用重启 agentd**。
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| `GET` | `/api/image/config` | 返回 `{ok, config, profiles, sizes}`（profiles 是可选服务商列表） |
-| `POST` | `/api/image/config` | 保存配置到 imagegen.json |
-| `POST` | `/api/image/generate` | 生成：body 带 prompt / profile_id / model / size / n |
-| `GET` | `/api/image/<hexid>` | 按 id 读图字节，免 token，供 `<img src>` 直连 |
+| `POST` | `/api/model/media` | body `{vision_model, image_model}`，写进当前激活 profile + 热切换 |
+| `POST` | `/api/artifact_preview` | 产物图片预览：白名单内的图片 → `{ok, mime, b64}`（带鉴权，≤12MB） |
 
-`/api/image/generate` 返回 `{ok, id, prompt, model, size, images:[{id, path, mime,
-url, name}]}`；`ok:False` 时带 `error`（提示词空 / 没选 provider / 没 key / 接口报错
-都走这里，前端原样显示，不会崩）。
+两个坑，都写在 `_apply_media_env()` 的注释里：
 
-**落盘与白名单。** 生成图统一写到 agentd 的 blobstore 外置输出根目录下的
-`tool_results_root/imagegen/`（这个目录已在产物白名单内，下载/打开不受限）；每个
-文件用一个 `secrets.token_hex(8)` 的不可猜 id 登记进服务进程的 `generated_images`
-内存表，前端拿到的 `url` 就是 `/api/image/<id>`。支持 `b64_json`（直出）和 `url`
-（后端再回源抓一次字节，避免某些 provider 的临时 URL 过期/需代理导致前端取不到图）
-两种返回形态，MIME 按返回内容或扩展名推断。
+- **清空要写空串，不能 `pop` 键。** `save_models` 是"缺的键沿用旧值"的合并语义
+  （为了保住被打码的 API key），删键等于没删 —— 必须显式写 `""`。
+- **输入框绝不回填 `*_API_KEY`。** 列表接口会把含 `KEY` 的值打码成 `xxx…yyy`，
+  回填再保存就等于把打码串写回去了。
 
-后端实现在 `forgeagent/gui/image_gen.py`（纯标准库、无 GUI 依赖、可单测）；HTTP
-封装在 `server.py` 的 `_handle_image_generate()` 与 `_api_get()` / `do_POST()` 里；
-前端面板、灯箱、缩略图网格都在 `assets/index.html`（新增 `#img-gen-pane` 与
-`#lightbox`，零外部依赖）。单测在 `tests/test_image_gen.py`（16 个用例，覆盖配置
-读写、profile 筛选、b64/url 两种返回、HTTP 错误与缺 key/缺模型等分支）。
+没配时是什么表现：视觉那边是"功能关"，图片块原样发给主模型（和没有这一层完全
+一致）；图像生成那边工具还在，但一调就回一句**可行动的**报错——"未配置图像生成
+模型，请到模型管理 → 多媒体模型设置里填一个（或设 AGENTD_IMAGE_MODEL）"，
+而不是半路静默失败。
+
+### 模型能力标签
+
+模型管理里每个模型名后面跟一串能力标签（`assets/index.html` 的 `modelCaps()`）：
+
+| 标签 | 含义 |
+|---|---|
+| `文字` | 默认能力，所有模型都有 |
+| `图像识别` | 能吃图片输入（视觉模型） |
+| `图像生成` | 能出图（图像模型），这类模型**不带**「文字」标签 |
+
+判定是**纯名字启发式**：各家 `/v1/models` 只给 id、不给类型元数据，所以只能按
+名字匹配（`cogview|glm-image|dall|flux|seedream|kolors|wanx…` 判生成，
+`glm-4.6v|-vl|vision|omni` 判视觉）。智谱 `/v4/models` 列出来那 11 个全是文本模型，
+光看名字分不出谁能出图 —— 这正是要打标签的原因。
+
+纯图像生成模型（不带「文字」标签的）**不可点击切换**：把它切过去当聊天模型必然报错，
+所以这一行不给点击，title 直接告诉你正确用法（去「多媒体模型」里设为默认图像生成
+模型）。标签就长在它该在的地方，但门禁不让用户踩坑。
 
 ### 三跳验证
 
@@ -528,7 +545,6 @@ forgeagent/
     server.py       本机 UI 服务：bridge 的 HTTP 封装 + 静态页面（含 token 校验）
     mcp_config.py   读 mcp.json → 转成 ACP session/new 要的 mcpServers 结构
     mcp_presets.py  本地 MCP server 预设：venv 路径推断 / 条目生成 / 配置合并
-    image_gen.py    图片生成：调 OpenAI 兼容 images/generations，配置存 imagegen.json
     assets/         HTML 前端（HTML/CSS/JS，无外部依赖、离线可用）
     __main__.py     GUI 入口（--mode 选前端载体）
 electron/          Electron 壳（main.js + package.json），默认前端载体：
@@ -549,7 +565,8 @@ tests/
   test_app.py          TUI 冒烟（headless）
   test_gui_bridge.py   桥接层单测（注入假 client，无需图形环境）
   test_gui_server.py   本机 UI 服务单测：真起 HTTP 服务，真发请求
-  test_image_gen.py    图片生成单测：配置读写 / provider 筛选 / b64 与 url 两种返回 / HTTP 错误
+  test_gui_media_settings.py  多媒体模型设置单测：写进激活 profile / 端点密钥推导 / 热切换 / 清空语义
+  test_gui_artifact_preview.py  产物图片预览单测：MIME 推导 / 非图片拒绝 / 白名单外拒绝 / 超大拒绝 / 必须 401
   test_gui_mcp_config.py  mcp.json 解析单测（含"必填字段不能省"的回归）
   test_mcp_presets.py     本地 MCP 预设单测：venv 路径 / 条目必填字段 / 配置合并
   test_gui_tool_kinds.py  界面文案单测：每个 ACP kind / status 都得有中文标签

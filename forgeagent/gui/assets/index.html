@@ -476,6 +476,17 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .artifact .asize { font-size: 11px; color: var(--text-dim); flex: none; }
+  /* 图片产物内联预览：生成的图得看得见，否则"出图"在界面上只剩一行路径。
+     缩略图独占一行放在卡片下方（卡片本身是横排 flex，塞进去会挤掉文件名）。 */
+  .artifact.has-thumb { flex-wrap: wrap; }
+  .artifact .athumb {
+    flex: 0 0 100%; margin-top: 8px; display: block;
+    max-width: 100%; max-height: 320px; width: auto;
+    border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+  }
+  .artifact .athumb-fail {
+    flex: 0 0 100%; margin-top: 6px; font-size: 11px; color: var(--text-dim);
+  }
   /* 会话级产物清单（对齐 WorkBuddy 的「查看所有产物 (N)」）：
      常驻消息流末尾。order:9999 让它永远排到最后一个 —— 不用追着每个
      appendPoint 把它挪到底部；innerHTML 清空后由 resetTray/ensureTray 重建。
@@ -714,11 +725,11 @@
     font-size: 12px; padding: 3px 6px; max-width: 220px;
     border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
   }
-  #models-pane, #mcp-pane, #space-new-pane, #img-gen-pane {
+  #models-pane, #mcp-pane, #space-new-pane {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35);
     z-index: 60; align-items: center; justify-content: center;
   }
-  #models-pane.open, #mcp-pane.open, #space-new-pane.open, #img-gen-pane.open { display: flex; }
+  #models-pane.open, #mcp-pane.open, #space-new-pane.open { display: flex; }
   /* 新建空间弹窗：空间名 + 目录（目录用原生对话框选，也允许手改） */
   #space-new-pane .sn-row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
   #space-new-pane .sn-row label { font-size: 12px; color: var(--text-dim); width: 64px; flex: 0 0 auto; }
@@ -786,6 +797,9 @@
     font-size: 12px; cursor: pointer; border-top: 1px solid var(--border);
   }
   .mp-model:hover { background: var(--bg-soft); }
+  /* 纯图像生成模型：不能当聊天模型切，别让它看起来可点 */
+  .mp-model.gen-only { cursor: default; }
+  .mp-model.gen-only:hover { background: transparent; }
   .mp-model .mp-dot {
     flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--border);
   }
@@ -797,6 +811,13 @@
   .mp-model.active .mp-mname { font-weight: 600; }
   .mp-model.active { cursor: default; }   /* 已是当前模型，点了也没动作 */
   .mp-model .mp-use { flex: 0 0 auto; font-size: 10px; color: var(--ok); }
+  /* 能力标签：模型名后面的 文字 / 图像识别 / 图像生成 小徽章 */
+  .mp-cap {
+    flex: 0 0 auto; font-size: 10px; line-height: 1; padding: 2px 6px;
+    border: 1px solid var(--border); border-radius: 999px; color: var(--text-dim);
+  }
+  .mp-cap.cap-vis { color: #7d3ac1; border-color: #d8c2f2; }
+  .mp-cap.cap-gen { color: #b45309; border-color: #f3d9a4; }
   /* provider 一个模型都没填时的占位行（不可点） */
   .mp-model.none { cursor: default; color: var(--text-dim); }
   .mp-model.none:hover { background: transparent; }
@@ -818,6 +839,16 @@
      一边宽一边窄，甚至溢出容器。 */
   .m-row-split { display: flex; gap: 8px; }
   .m-row-split input { min-width: 0; flex: 1 1 0; }
+  /* ---- 多媒体模型（默认图像识别 / 图像生成）---- */
+  .m-media {
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; margin-top: 12px;
+  }
+  .m-media-title { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+  .m-media .m-note-sub { margin-bottom: 8px; }
+  .m-media-hint { font-size: 11px; color: var(--text-dim); align-self: center; }
+  .m-media-hint.ok { color: var(--ok); }
+  .m-media-hint.err { color: var(--danger); }
 
   /* ---- 会话右键菜单 ---- */
   #ctx-menu {
@@ -893,85 +924,6 @@
   .toast-title { font-size: 13px; font-weight: 600; color: var(--text); }
   .toast-detail { font-size: 12px; color: var(--text-dim); line-height: 1.5; margin-top: 3px; }
 
-  /* ---- 图片生成面板 ---- */
-  .img-gen-card {
-    width: 92%; max-width: 520px; background: var(--bg);
-    border: 1px solid var(--border); border-radius: 12px;
-    box-shadow: 0 12px 40px rgba(0,0,0,.22); overflow: hidden;
-  }
-  .img-gen-head-row {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 16px; border-bottom: 1px solid var(--border);
-  }
-  .img-gen-title { font-size: 15px; font-weight: 600; color: var(--text); }
-  .pane-x {
-    border: none; background: transparent; font-size: 22px; line-height: 1;
-    color: var(--text-dim); cursor: pointer; padding: 0 4px;
-  }
-  .pane-x:hover { color: var(--text); }
-  .img-gen-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-  .ig-label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
-  #ig-prompt {
-    width: 100%; resize: vertical; min-height: 64px; box-sizing: border-box;
-    border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
-    color: var(--text); padding: 10px; font: inherit; line-height: 1.5;
-  }
-  .ig-row { display: flex; gap: 12px; }
-  .ig-field { flex: 1; min-width: 0; }
-  .ig-field select, .ig-field input {
-    width: 100%; box-sizing: border-box; border: 1px solid var(--border);
-    border-radius: 8px; background: var(--bg); color: var(--text);
-    padding: 8px 10px; font: inherit;
-  }
-  .ig-hint { font-size: 12px; color: var(--text-dim); min-height: 16px; }
-  .ig-hint:empty { min-height: 0; }
-  #ig-generate {
-    align-self: flex-end; padding: 9px 22px; font-size: 14px; cursor: pointer;
-    background: var(--accent); color: #fff; border: 1px solid var(--accent);
-    border-radius: 8px;
-  }
-  #ig-generate:hover:not(:disabled) { background: #1d4ed8; }
-  #ig-generate:disabled { opacity: .55; cursor: not-allowed; }
-
-  /* ---- 对话内的图片生成结果卡 ---- */
-  .img-gen-result .img-gen-head {
-    font-size: 13px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px;
-  }
-  .img-gen-prompt {
-    background: var(--code-bg); border-radius: 8px; padding: 8px 10px;
-    font-size: 13px; color: var(--text); margin-bottom: 10px;
-    white-space: pre-wrap; word-break: break-word;
-  }
-  .img-gen-grid { display: flex; flex-wrap: wrap; gap: 10px; }
-  .img-gen-cell {
-    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
-    background: var(--bg); width: 200px; max-width: 100%;
-  }
-  .img-gen-cell img {
-    display: block; width: 100%; height: auto; cursor: zoom-in;
-    background: repeating-conic-gradient(#eee 0 25%, #fafafa 0 50%) 50% / 16px 16px;
-  }
-  .img-gen-bar {
-    display: flex; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--border);
-  }
-  .img-gen-act {
-    font-size: 12px; color: var(--accent); cursor: pointer; text-decoration: none;
-    background: transparent; border: none; padding: 2px 4px;
-  }
-  .img-gen-act:hover { text-decoration: underline; }
-
-  /* ---- 图片放大灯箱 ---- */
-  #lightbox {
-    display: none; position: fixed; inset: 0; z-index: 120;
-    background: rgba(0,0,0,.82); align-items: center; justify-content: center;
-    cursor: zoom-out;
-  }
-  #lightbox.open { display: flex; }
-  #lightbox img {
-    max-width: 92vw; max-height: 92vh; border-radius: 6px;
-    box-shadow: 0 12px 60px rgba(0,0,0,.5);
-  }
-
 </style>
 </head>
 <body>
@@ -1037,7 +989,6 @@
           </div>
           <div class="w-meta">
             <button id="w-attach" class="w-attachbtn" type="button" title="添加图片（也可直接 Ctrl+V 粘贴截图）"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></button>
-            <button id="w-img-gen" class="w-attachbtn" type="button" title="生成图片（调用兼容 OpenAI 的图像接口）">🎨</button>
             <span class="w-frag" id="w-model" title="点这里切换模型（与顶部下拉等价）">…</span>
             <button id="w-send" class="w-sendbtn" type="button" title="发送（Enter）">➤</button>
           </div>
@@ -1065,7 +1016,6 @@
       <div id="attach-strip"></div>
       <div id="composer-row">
         <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行，可附图片）"></textarea>
-        <button id="img-gen-btn" type="button" title="生成图片（调用兼容 OpenAI 的图像接口）">🎨</button>
         <button id="attach" type="button" title="附加图片（发给模型识别）"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></button>
         <button id="send">发送</button>
         <button id="stop" disabled title="停止当前生成（中断后仍保留已生成的部分）">停止</button>
@@ -1110,6 +1060,17 @@
           一边静默溢出"。<b>留空 = 不改</b>（保持该配置原来的值），<b>填 0 = 不限</b>。
         </div>
         <div id="m-list"></div>
+        <div class="m-media" id="m-media">
+          <div class="m-media-title">多媒体模型</div>
+          <div class="m-note m-note-sub">
+            对话里「看懂图片 / 生成图片」用的默认模型，写进<b>当前激活配置</b>的环境变量
+            （key 和地址自动沿用该配置，不用重填）。保存即热生效，不用重启；聊天模型不受影响。
+            <b>清空并保存 = 关掉该能力。</b>
+          </div>
+          <div class="m-row"><input id="m-vision-model" placeholder="默认图像识别模型，如 glm-4.6v（看懂你发的图片）"></div>
+          <div class="m-row"><input id="m-image-model" placeholder="默认图像生成模型，如 glm-image（对话里直接说「帮我画一张…」就能出图）"></div>
+          <div class="m-actions"><button id="m-media-save" type="button">保存多媒体设置</button><span id="m-media-hint" class="m-media-hint"></span></div>
+        </div>
         <div class="m-edit" id="m-edit">
           <div class="m-row"><input id="m-name" placeholder="显示名，如：智谱 GLM-4.5-air"></div>
           <div class="m-row"><input id="m-backend" placeholder="AGENTD_LLM_BACKEND，如 zhipu"></div>
@@ -1207,54 +1168,6 @@
     <div class="ctx-sep"></div>
     <button class="ctx-item danger" id="ctx-hide" type="button">从列表中删除</button>  </div>
 </div>
-
-  <!-- 图片生成面板：点 composer 的 🎨 弹出。复用 openai_compat 类 provider 的图像接口 -->
-  <div id="img-gen-pane">
-    <div class="img-gen-card">
-      <div class="img-gen-head-row">
-        <span class="img-gen-title">生成图片</span>
-        <button id="ig-close" class="pane-x" type="button" title="关闭">×</button>
-      </div>
-      <div class="img-gen-body">
-        <div>
-          <label class="ig-label" for="ig-prompt">提示词</label>
-          <textarea id="ig-prompt" rows="3" placeholder="描述你想生成的画面…"></textarea>
-        </div>
-        <div class="ig-row">
-          <div class="ig-field">
-            <label class="ig-label" for="ig-profile">Provider</label>
-            <select id="ig-profile"></select>
-          </div>
-          <div class="ig-field">
-            <label class="ig-label" for="ig-model">图像模型</label>
-            <input id="ig-model" type="text" placeholder="如 dall-e-3">
-          </div>
-        </div>
-        <div class="ig-row">
-          <div class="ig-field">
-            <label class="ig-label" for="ig-size">尺寸</label>
-            <select id="ig-size"></select>
-          </div>
-          <div class="ig-field">
-            <label class="ig-label" for="ig-n">张数</label>
-            <select id="ig-n">
-              <option value="1">1 张</option>
-              <option value="2">2 张</option>
-              <option value="3">3 张</option>
-              <option value="4">4 张</option>
-            </select>
-          </div>
-        </div>
-        <div id="ig-hint" class="ig-hint"></div>
-        <button id="ig-generate" type="button">生成</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 图片放大灯箱：点对话里的缩略图打开，再点任意处关闭 -->
-  <div id="lightbox">
-    <img id="lightbox-img" src="" alt="">
-  </div>
 
 <script>
 (function () {
@@ -2095,6 +2008,30 @@
     return { row: row, pathEl: pathEl, sizeEl: sizeEl };
   }
 
+  // 图片产物：拉回字节渲染成缩略图。走 /api/artifact_preview（带 token 的 POST），
+  // 不拼 /api/file/<id> 那种免鉴权 URL —— 产物路径不是上传附件，没有 id 可认领，
+  // 免鉴权等于给任意能打开本页面的脚本一张读图门票。
+  var IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+
+  function attachThumb(row, p, abs) {
+    if (!IMAGE_EXT_RE.test(abs || p)) return;
+    api("/api/artifact_preview", { method: "POST", body: { path: p } }).then(function (r) {
+      if (!r.ok) {
+        var err = document.createElement("div");
+        err.className = "athumb-fail";
+        err.textContent = "（预览不可用：" + (r.error || "未知错误") + "，点卡片用系统查看器打开）";
+        row.appendChild(err);
+        return;
+      }
+      var im = document.createElement("img");
+      im.className = "athumb";
+      im.alt = (abs || p).split(/[\\/]/).pop();
+      im.src = "data:" + r.mime + ";base64," + r.b64;
+      row.classList.add("has-thumb");
+      row.appendChild(im);
+    }).catch(function () { /* 预览失败不影响卡片本身 */ });
+  }
+
   function wireArtifact(row, pathEl, sizeEl, p, gen) {
     api("/api/file_info", { method: "POST", body: { path: p } }).then(function (r) {
       if (gen !== trayGen) return;  // 会话已切走：旧会话的状态不能画进新会话
@@ -2111,6 +2048,7 @@
           if (!r2.ok) showErrorBubble("打开失败", r2.error || "未知错误");
         }).catch(function (e) { showErrorBubble("打开失败", String(e)); });
       });
+      attachThumb(row, p, r.abs);
     }).catch(function () {
       if (gen !== trayGen) return;
       row.classList.add("dead");
@@ -2643,6 +2581,27 @@
     return one ? [one] : [];
   }
 
+  // 模型能力标签（纯命名启发式，providers 的 /models 接口不给类型元数据）：
+  //   图像生成 —— cogview / glm-image / image / dall / flux / seedream 等文生图词根；
+  //   图像识别 —— 版本号以 v 收尾（glm-4.6v、glm-4.1v-thinking）或带 vl / vision / omni；
+  //   文字     —— 其余全部默认有（聊天）。
+  // 纯文生图模型不能对话，只标「图像生成」；glm-4.5-air / glm-5.3-flash 这类名字两个正则都不命中。
+  function modelCaps(name) {
+    var n = String(name || "").toLowerCase();
+    var gen = /cogview|glm-image|image|dall|flux|seedream|kolors|sd\d|stable-?diff|wanx/.test(n);
+    var vis = /\d+(\.\d+)?v(?=$|[-_.])|-vl|vl(?=$|[-_.])|vision|omni/.test(n);
+    if (gen && !vis) return ["图像生成"];
+    var caps = ["文字"];
+    if (vis) caps.push("图像识别");
+    return caps;
+  }
+  function capBadge(text) {
+    var s = document.createElement("span");
+    s.className = "mp-cap" + (text === "图像识别" ? " cap-vis" : text === "图像生成" ? " cap-gen" : "");
+    s.textContent = text;
+    return s;
+  }
+
   // 该 provider 当前生效的模型（env 里那个 MODEL，切模型后由后端落回 models.json）。
   function currentModelOf(p) {
     var env = p.env || {};
@@ -2661,8 +2620,10 @@
     return { text: full, full: full };
   }
 
+  // 返回 promise：保存多媒体设置后要等它渲完再写提示，否则提示会被
+  // renderMediaSection 的 hint 复位清掉（实测：保存成功但界面上什么都没闪）。
   function renderModelList() {
-    api("/api/models").then(function (res) {
+    return api("/api/models").then(function (res) {
       mList.innerHTML = "";
       var active = res.active;
       var profiles = res.profiles || [];
@@ -2675,7 +2636,58 @@
         empty.textContent = "还没有配置。点「+ 新增」建一个（比如智谱 / MiMo / Ollama）。";
         mList.appendChild(empty);
       }
+      renderMediaSection(profiles, active);
     }).catch(function () {});
+  }
+
+  // ---- 多媒体模型：默认图像识别 / 图像生成（写进当前激活配置的 env）----
+  // 注意回填口径：MODEL / BASE_URL 不脱敏可以直接回填；*_API_KEY 会被服务端
+  // 脱敏成 "abc…xyz"，绝不能回填输入框（这里也不需要 —— 派生在服务端做）。
+  function renderMediaSection(profiles, active) {
+    var box = document.getElementById("m-media");
+    if (!box) return;
+    var p = null;
+    profiles.forEach(function (x) { if (x.id === active) p = x; });
+    if (!p) {
+      box.style.display = "none";
+      return;
+    }
+    box.style.display = "";
+    var env = p.env || {};
+    document.getElementById("m-vision-model").value = env["AGENTD_VISION_MODEL"] || "";
+    document.getElementById("m-image-model").value = env["AGENTD_IMAGE_MODEL"] || "";
+    var hint = document.getElementById("m-media-hint");
+    hint.textContent = ""; hint.className = "m-media-hint";
+  }
+
+  function saveMediaSection() {
+    var hint = document.getElementById("m-media-hint");
+    var btn = document.getElementById("m-media-save");
+    btn.disabled = true;
+    api("/api/model/media", {
+      method: "POST",
+      body: {
+        vision_model: document.getElementById("m-vision-model").value.trim(),
+        image_model: document.getElementById("m-image-model").value.trim()
+      }
+    }).then(function (r) {
+      btn.disabled = false;
+      if (!r || !r.ok) {
+        hint.textContent = (r && r.error) || "保存失败";
+        hint.className = "m-media-hint err";
+        return;
+      }
+      // 先重算列表（它会把 hint 复位成空串），**再**写成功提示 —— 顺序反了
+      // 用户就完全看不到反馈，只会怀疑自己那一下是不是没点上。
+      renderModelList().then(function () {
+        hint.textContent = "已保存并热生效";
+        hint.className = "m-media-hint ok";
+      });
+    }).catch(function (e) {
+      btn.disabled = false;
+      hint.textContent = "保存失败：" + String((e && e.message) || e);
+      hint.className = "m-media-hint err";
+    });
   }
 
   // 一级：provider 行；二级：它名下的模型行。点一级行空白处折叠，点二级行热切换。
@@ -2741,10 +2753,17 @@
       var mname = document.createElement("span");
       mname.className = "mp-mname"; mname.textContent = m;
       row.appendChild(dot); row.appendChild(mname);
+      // 能力标签：让用户一眼看出这个模型能干什么（文字 / 图像识别 / 图像生成）
+      modelCaps(m).forEach(function (c) { row.appendChild(capBadge(c)); });
       if (isCur) {
         var use = document.createElement("span");
         use.className = "mp-use"; use.textContent = "使用中";
         row.appendChild(use);
+      } else if (modelCaps(m).indexOf("文字") < 0) {
+        // 纯图像生成模型（glm-image / cogview-3-plus…）：切过去当聊天模型必然报错，
+        // 所以这一行不给点击，直接把正确用法写在 title 上。
+        row.classList.add("gen-only");
+        row.title = "这是图像生成模型，不能当聊天模型用；请到下面的「多媒体模型」里把它设为默认图像生成模型";
       } else {
         row.title = "点一下切到这个模型（热切换，不重启 agentd）";
         row.addEventListener("click", function () { switchProfileModel(p, m); });
@@ -2861,6 +2880,8 @@
       out.textContent = String(e);
     }).then(function () { btn.disabled = false; });
   });
+
+  document.getElementById("m-media-save").addEventListener("click", saveMediaSection);
 
   document.getElementById("m-save").addEventListener("click", function () {
     var profile = profileFromForm();
@@ -4102,14 +4123,6 @@
     fileInput.value = "";
     fileInput.click();
   });
-  // 欢迎页也提供「生成图片」入口（与 composer 里的 🎨 同一条 openImageGen）
-  var wImgGenBtn = document.getElementById("w-img-gen");
-  if (wImgGenBtn) {
-    wImgGenBtn.addEventListener("click", function () {
-      if (busy) return;
-      openImageGen();
-    });
-  }
   fileInput.addEventListener("change", function () {
     addPendingImages(fileInput.files);
   });
@@ -4326,160 +4339,6 @@
       setStatus("error", "连不上本机服务（请用 forgeagent-gui 启动，别直接双击打开 html）");
     }
   );
-  // ---- 图片生成面板 ----
-  var igPane = document.getElementById("img-gen-pane");
-  var igPrompt = document.getElementById("ig-prompt");
-  var igProfile = document.getElementById("ig-profile");
-  var igModel = document.getElementById("ig-model");
-  var igSize = document.getElementById("ig-size");
-  var igN = document.getElementById("ig-n");
-  var igHint = document.getElementById("ig-hint");
-  var igGenerate = document.getElementById("ig-generate");
-  var lightbox = document.getElementById("lightbox");
-  var lightboxImg = document.getElementById("lightbox-img");
-
-  function openImageGen() {
-    if (!started) return;
-    loadImageGenConfig();
-    igPane.classList.add("open");
-    setTimeout(function () { igPrompt.focus(); }, 30);
-  }
-  function closeImageGen() { igPane.classList.remove("open"); }
-
-  document.getElementById("img-gen-btn").addEventListener("click", openImageGen);
-  document.getElementById("ig-close").addEventListener("click", closeImageGen);
-  igPane.addEventListener("click", function (e) { if (e.target === igPane) closeImageGen(); });
-
-  function loadImageGenConfig() {
-    api("/api/image/config").then(function (r) {
-      if (!r || !r.ok) { igHint.textContent = "读取配置失败"; return; }
-      var cfg = r.config || {};
-      var profiles = r.profiles || [];
-      var sizes = r.sizes || [];
-      var picked = cfg.profile_id || "";
-      igProfile.innerHTML = "";
-      if (!profiles.length) {
-        var none = document.createElement("option");
-        none.value = ""; none.textContent = "（无可用 provider）";
-        igProfile.appendChild(none);
-        igHint.textContent = "没有可用的图像 provider：请先在「设置 → 模型管理」加一个 openai_compat 类模型（含 API Key）。";
-        igGenerate.disabled = true;
-        return;
-      }
-      igGenerate.disabled = false;
-      igHint.textContent = "";
-      profiles.forEach(function (p) {
-        var o = document.createElement("option");
-        o.value = p.id; o.textContent = p.name;
-        if (p.id === picked) o.selected = true;
-        igProfile.appendChild(o);
-      });
-      // 没有显式选中的就用第一个 profile
-      if (!picked && profiles[0]) { picked = profiles[0].id; igProfile.value = picked; }
-      var useProfile = profiles.filter(function (p) { return p.id === picked; })[0] || profiles[0];
-      igModel.value = cfg.model || (useProfile && useProfile.model) || "";
-      igModel.placeholder = (useProfile && useProfile.model) || "如 dall-e-3 / cogview-3-plus";
-      igSize.innerHTML = "";
-      sizes.forEach(function (s) {
-        var o = document.createElement("option");
-        o.value = s; o.textContent = s;
-        if (s === (cfg.size || "1024x1024")) o.selected = true;
-        igSize.appendChild(o);
-      });
-      igN.value = String(cfg.n || 1);
-    }).catch(function (e) {
-      igHint.textContent = "读取配置失败：" + String((e && e.message) || e);
-    });
-  }
-
-  igGenerate.addEventListener("click", function () {
-    var prompt = igPrompt.value.trim();
-    if (!prompt) { igHint.textContent = "提示词不能为空"; return; }
-    var profile_id = igProfile.value;
-    if (!profile_id) { igHint.textContent = "请先选择 provider"; return; }
-    var model = igModel.value.trim();
-    var size = igSize.value;
-    var n = parseInt(igN.value, 10) || 1;
-    // 记住本次选择（provider / 模型 / 尺寸 / 张数），下次打开预填
-    api("/api/image/config", {
-      method: "POST",
-      body: { config: { profile_id: profile_id, model: model, size: size, n: n } }
-    }).catch(function () {});
-    igGenerate.disabled = true;
-    igHint.textContent = "生成中…";
-    api("/api/image/generate", {
-      method: "POST",
-      body: { prompt: prompt, profile_id: profile_id, model: model, size: size, n: n }
-    }).then(function (r) {
-      if (!r || !r.ok) {
-        igHint.textContent = (r && r.error) || "生成失败";
-        igGenerate.disabled = false;
-        return;
-      }
-      renderImageResult(prompt, r.images || [], r.model);
-      closeImageGen();
-      showToast("图片已生成", "生成了 " + ((r.images && r.images.length) || 0) + " 张");
-    }).catch(function (e) {
-      igHint.textContent = "生成失败：" + String((e && e.message) || e);
-      igGenerate.disabled = false;
-    });
-  });
-
-  // 对话内渲染一张「图片生成」结果卡：用户提示词 + 图片缩略图网格。
-  // 与 WorkBuddy 一致——图片直接落在会话里，可点开大图、可下载/在文件夹打开。
-  function renderImageResult(prompt, images, model) {
-    var g = newBubble("user");
-    g.classList.add("img-gen-result");
-    var head = document.createElement("div");
-    head.className = "img-gen-head";
-    head.textContent = "🎨 生成图片" + (model ? " · " + model : "");
-    g.appendChild(head);
-    if (prompt) {
-      var p = document.createElement("div");
-      p.className = "img-gen-prompt";
-      p.textContent = prompt;
-      g.appendChild(p);
-    }
-    var grid = document.createElement("div");
-    grid.className = "img-gen-grid";
-    images.forEach(function (im) {
-      var cell = document.createElement("div");
-      cell.className = "img-gen-cell";
-      var img = document.createElement("img");
-      img.src = im.url; img.alt = prompt || "generated"; img.loading = "lazy";
-      img.addEventListener("click", function () { openLightbox(im.url); });
-      cell.appendChild(img);
-      var bar = document.createElement("div");
-      bar.className = "img-gen-bar";
-      var dl = document.createElement("a");
-      dl.href = im.url; dl.download = im.name || "image.png";
-      dl.className = "img-gen-act"; dl.textContent = "下载";
-      bar.appendChild(dl);
-      var openBtn = document.createElement("button");
-      openBtn.type = "button"; openBtn.className = "img-gen-act"; openBtn.textContent = "打开";
-      openBtn.addEventListener("click", function () {
-        api("/api/open_path", { method: "POST", body: { path: im.path } })
-          .catch(function (e) { showErrorBubble("打开失败", String((e && e.message) || e)); });
-      });
-      bar.appendChild(openBtn);
-      cell.appendChild(bar);
-      grid.appendChild(cell);
-    });
-    g.appendChild(grid);
-    messages.appendChild(g);
-    attachCopy(g);
-    if (autoScroll) scrollToBottom();
-    return g;
-  }
-
-  function openLightbox(url) {
-    lightboxImg.src = url;
-    lightbox.classList.add("open");
-  }
-  lightbox.addEventListener("click", function () {
-    lightbox.classList.remove("open");
-    lightboxImg.src = "";
-  });
 
   // 自动化 UI 测试钩子（Electron harness 用）：只暴露引用，不改任何行为。
   // 页面主逻辑全在闭包里，外部测试拿不到 upsertTool / messages —— 没这个

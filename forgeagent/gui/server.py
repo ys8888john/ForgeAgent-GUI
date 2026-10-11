@@ -24,12 +24,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import base64
 import secrets
 import subprocess
 import tempfile
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import sys
 import urllib.request
@@ -38,7 +36,6 @@ from urllib.parse import parse_qs, urlparse
 
 from .bridge import Bridge
 from . import models as _models
-from . import image_gen as _image_gen
 from .mcp_config import config_path, load_mcp_servers, save_config_dict
 from .mcp_presets import PRESETS, build_entries, merge_config, python_bin, repo_root, venv_dir
 from .models import env_for, load_models, models_path, sanitize_profile, save_models
@@ -61,6 +58,17 @@ except ImportError:  # pragma: no cover - 只有裸 UI 调试时才会走到
 _ARTIFACT_DENYLIST_EXT = frozenset(
     {".exe", ".bat", ".cmd", ".com", ".scr", ".msi", ".ps1", ".vbs", ".jar", ".lnk", ".reg"}
 )
+
+# 产物卡片内联预览：只给图片做（生成的图得看得见，否则"出图"只剩一行路径）。
+# 白名单之外的路径 / 非图片扩展名一律拒绝，所以最坏情况也只是"读一张自己
+# 会话里生成的图"，不会变成任意文件读取。
+_ARTIFACT_IMAGE_EXT = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"})
+_ARTIFACT_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+}
+_ARTIFACT_PREVIEW_MAX_BYTES = 12 * 1024 * 1024
 
 
 def _open_with_default_app(path: Path) -> dict:
@@ -294,6 +302,63 @@ def _backend_prefix(backend: str | None) -> str:
     return "AGENTD_OLLAMA_"
 
 
+def _apply_media_env(env: dict, prefix: str, model: str) -> None:
+    """把「默认图像识别 / 图像生成模型」落成 profile env 里的 VISION_* / IMAGE_* 三件套。
+
+    model 非空：写 MODEL；BASE_URL / API_KEY 从当前 profile 的主凭据**派生** ——
+    聊天和多媒体本来就是同一家 provider，不该让用户把同一把 key 抄三遍
+    （agentd 侧 vision.py 用 AGENTD_VISION_*，generate_image 工具用 AGENTD_IMAGE_*）。
+    model 为空：整组置空串 = 关掉该能力（agentd 侧空值就是「未配置」）。
+    **不能 pop**：save_models 的 merge 语义是「缺失的键继承旧值」（为保护脱敏
+    掩码不覆盖真值设计的），pop 掉的键会被旧值原样塞回来 —— 只有显式置空串
+    才能穿过 merge 真正清掉。
+
+    只服务「设置」这一个入口，所以每次都整组重写：这里就是这些键的唯一权威来源，
+    手改 models.json 的旧值会被下一次保存覆盖 —— 语义可预期比"意外的合并"重要。
+    """
+    env[f"AGENTD_{prefix}_MODEL"] = ""
+    env[f"AGENTD_{prefix}_BASE_URL"] = ""
+    env[f"AGENTD_{prefix}_API_KEY"] = ""
+    env[f"AGENTD_{prefix}_HOST"] = ""
+    if not model:
+        return
+    env[f"AGENTD_{prefix}_MODEL"] = model
+    if prefix == "VISION" and not env.get("AGENTD_VISION_BASE_URL"):
+        base = (
+            env.get("AGENTD_OPENAI_BASE_URL")
+            or env.get("AGENTD_ZHIPU_BASE_URL")
+            or env.get("AGENTD_MIMO_BASE_URL")
+            or ""
+        )
+        if base:
+            env["AGENTD_VISION_BASE_URL"] = base
+        else:
+            host = (env.get("AGENTD_OLLAMA_HOST") or "").strip()
+            if host:
+                env["AGENTD_VISION_HOST"] = host  # Ollama 走原生协议，vision.py 用 HOST
+    if prefix == "IMAGE":
+        base = (
+            env.get("AGENTD_OPENAI_BASE_URL")
+            or env.get("AGENTD_ZHIPU_BASE_URL")
+            or env.get("AGENTD_MIMO_BASE_URL")
+            or ""
+        )
+        if base:
+            env["AGENTD_IMAGE_BASE_URL"] = base
+        else:
+            host = (env.get("AGENTD_OLLAMA_HOST") or "").strip()
+            if host:
+                env["AGENTD_IMAGE_BASE_URL"] = host.rstrip("/") + "/v1"  # Ollama 的兼容端点
+    key = (
+        env.get("AGENTD_OPENAI_API_KEY")
+        or env.get("AGENTD_ZHIPU_API_KEY")
+        or env.get("AGENTD_MIMO_API_KEY")
+        or ""
+    )
+    if key and not env.get(f"AGENTD_{prefix}_API_KEY"):
+        env[f"AGENTD_{prefix}_API_KEY"] = key
+
+
 def _route_wsl_ollama(env: dict | None, profile_id: str | None) -> dict | None:
     """WSL 本地 Ollama 的 profile（id 含 'wsl' 且 host 是 loopback）在 Windows 上
     自动改写成 WSL 实例 IP，让 Windows 侧 agentd 直连、绕过不稳定的 loopback 转发。
@@ -483,9 +548,6 @@ class UiServer:
         self.upload_dir = Path(tempfile.gettempdir()) / "forgeagent-uploads"
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.uploads: dict[str, dict] = {}
-        # 图片生成产物：落盘到 tool_results 外置目录（已在产物白名单内），
-        # 进程内用不可猜的 id 登记，前端凭 /api/image/<id> 取图。路径不出服务端。
-        self.generated_images: dict[str, dict] = {}
         self._host = host
         self._httpd = ThreadingHTTPServer((host, port), _Handler)
         self._httpd.daemon_threads = True
@@ -687,97 +749,6 @@ class _Handler(BaseHTTPRequestHandler):
         self._owner.uploads[iid] = meta
         return self._json({"ok": True, **meta})
 
-    def _handle_image_generate(self, body: dict) -> None:
-        """收一次生成请求：解析配置 → 调图像接口 → 落盘 → 注册 id 回 url。
-
-        见 _handle_upload 的注释：图片同样不走 multipart、路径不出服务端、
-        扩展名/大小由后端把关。返回 {ok, images:[{url, mime, name, path}]}，
-        前端凭 url 在对话里渲染、凭 path 走 /api/open_path 打开。
-        """
-        prompt = str(body.get("prompt") or "").strip()
-        if not prompt:
-            return self._fail(400, "提示词为空")
-
-        cfg = _image_gen.load_config()
-        profile_id = str(body.get("profile_id") or cfg["profile_id"] or "").strip()
-        if not profile_id:
-            return self._fail(400, "未选择图像 provider（请在生成面板里选一个 openai_compat 类模型）")
-        # profile_env 走 models.env_for：拿的是该 profile 的 AGENTD_OPENAI_* 变量
-        profile_env = _models.env_for(profile_id)
-        if not profile_env.get("AGENTD_OPENAI_API_KEY"):
-            return self._fail(400, "该 provider 没有图像 API Key（需 AGENTD_OPENAI_API_KEY）")
-
-        model = str(body.get("model") or cfg["model"] or "").strip()
-        size = str(body.get("size") or cfg["size"] or _image_gen.DEFAULT_SIZE)
-        try:
-            n = int(body.get("n") or cfg["n"] or 1)
-        except (TypeError, ValueError):
-            n = 1
-
-        try:
-            result = _image_gen.generate(
-                prompt, profile_env, model=model or None, size=size, n=n
-            )
-        except Exception as exc:  # noqa: BLE001 - 任何意外都转成前端能显示的错
-            return self._fail(500, f"{type(exc).__name__}: {exc}")
-
-        if not result.get("ok"):
-            return self._fail(502, result.get("error") or "图像生成失败")
-
-        # 落盘到 tool_results 外置目录（产物白名单内），注册 id 供 /api/image/<id> 取
-        root = _tool_results_root() / "imagegen"
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            return self._fail(500, f"创建图片目录失败: {exc}")
-
-        ext_by_mime = {
-            "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp",
-            "image/gif": "gif", "image/bmp": "bmp",
-        }
-        images: list[dict] = []
-        gid = secrets.token_hex(8)
-        ts = int(time.time())
-        for i, im in enumerate(result.get("images", [])):
-            b64 = str(im.get("b64") or "")
-            mime = str(im.get("mime") or _image_gen._FALLBACK_MIME)
-            try:
-                raw = base64.b64decode(b64, validate=False)
-            except Exception:  # noqa: BLE001 - 解不开就跳过这一张
-                continue
-            if not raw:
-                continue
-            iid = secrets.token_hex(8)
-            ext = ext_by_mime.get(mime, "png")
-            name = f"image_{ts}_{gid}_{i}.{ext}"
-            dest = root / name
-            try:
-                dest.write_bytes(raw)
-            except OSError as exc:
-                return self._fail(500, f"写图片文件失败: {exc}")
-            meta = {
-                "id": iid,
-                "path": str(dest),
-                "mime": mime,
-                "url": f"/api/image/{iid}",
-                "name": name,
-            }
-            self._owner.generated_images[iid] = meta
-            images.append(meta)
-
-        if not images:
-            return self._fail(500, "生成成功但图片解码失败")
-        return self._json(
-            {
-                "ok": True,
-                "id": gid,
-                "prompt": prompt,
-                "model": result.get("model") or model,
-                "size": size,
-                "images": images,
-            }
-        )
-
     # ---- 产物卡片：解析 / 打开会话里生成的文件 ----
 
     def _artifact_path(self, raw: object) -> Path | None:
@@ -816,12 +787,11 @@ class _Handler(BaseHTTPRequestHandler):
             return self._file("index.html")
 
         if path.startswith("/api/"):
-            # /api/file/<id> 与 /api/image/<id> 例外：<img src> 发不了自定义请求头，
+            # /api/file/<id> 例外：<img src> 发不了自定义请求头，
             # 鉴权靠 id 本身（secrets.token_hex，不可猜、只在本进程内存里登记）。
             # 其余 /api/* 照旧过 token。
             exempt_file = path.startswith("/api/file/")
-            exempt_img = bool(re.match(r"^/api/image/[0-9a-fA-F]+$", path))
-            if not exempt_file and not exempt_img and not self._authed():
+            if not exempt_file and not self._authed():
                 return self._fail(401, "token 不对")
             return self._api_get(path, q)
 
@@ -858,18 +828,6 @@ class _Handler(BaseHTTPRequestHandler):
         # multipart 是一坨），localhost 上这点 base64 开销无所谓。
         if u.path == "/api/upload":
             return self._handle_upload(body)
-
-        # ---- 图片生成配置保存（panel 关掉前把选择记住）----
-        if u.path == "/api/image/config":
-            cfg = _image_gen.save_config(body.get("config") if isinstance(body.get("config"), dict) else {})
-            return self._json({"ok": True, "config": cfg})
-
-        # ---- 图片生成：调一次兼容 OpenAI 的图像接口，落盘 + 注册 id 回 url ----
-        # 不依赖 agentd：属于独立的「本地工具」一类，agent 没连上也能用。
-        # 同步阻塞（ThreadingHTTPServer 在另一条线程上处理，不挡 /api/events 轮询）；
-        # 生成可能要 10~30s，前端用面板里的 spinner 等响应回来。
-        if u.path == "/api/image/generate":
-            return self._handle_image_generate(body)
 
         if u.path == "/api/state":
             bridge.ui_report(body.get("state") if isinstance(body.get("state"), dict) else body)
@@ -1170,6 +1128,37 @@ class _Handler(BaseHTTPRequestHandler):
                 {"ok": True, "hot_swapped": bool(routed), "id": pid or None, "model": model or None}
             )
 
+        # ---- 多媒体模型设置：默认图像识别 / 图像生成模型 ----
+        # 写进**当前激活 profile** 的 env（多媒体和聊天用同一家 provider，key 与
+        # 地址直接派生，不让用户抄三遍），随后照 /api/model/select 的方式重写
+        # 热配置 —— 正在跑的 agentd 下一轮就用上新模型，不用重启。
+        if u.path == "/api/model/media":
+            data = load_models()
+            pid = data.get("active")
+            profile = next((p for p in data["profiles"] if p.get("id") == pid), None)
+            if profile is None:
+                return self._fail(400, "没有激活的模型配置：先在列表里点一个再用")
+            env = dict(profile.get("env") or {})
+            changed = False
+            if isinstance(body.get("vision_model"), str):
+                _apply_media_env(env, "VISION", body["vision_model"].strip())
+                changed = True
+            if isinstance(body.get("image_model"), str):
+                _apply_media_env(env, "IMAGE", body["image_model"].strip())
+                changed = True
+            if not changed:
+                return self._fail(400, "没有要保存的字段（vision_model / image_model）")
+            profile["env"] = env
+            try:
+                saved = save_models(data)
+            except ValueError as exc:
+                return self._fail(400, str(exc))
+            hot = env_for(pid)
+            routed = _route_wsl_ollama(hot, pid) if hot else {}
+            if routed:
+                _models.write_hotenv(routed)
+            return self._json({"ok": True, "data": self._models_masked(saved)})
+
         # ---- 产物卡片：文件信息 / 打开 ----
         # 前端从 write_file / edit / make_xlsx 的完成输出里提取路径，先来
         # /api/file_info 换绝对路径和大小，点击时再调 /api/open_path 用系统
@@ -1186,6 +1175,30 @@ class _Handler(BaseHTTPRequestHandler):
             except OSError as exc:
                 return self._json({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
             return self._json({"ok": True, "abs": str(rp), "name": rp.name, "size": size})
+
+        # 产物图片预览：返回 base64 给前端拼 data: URL。
+        # 刻意**不**做成免 token 的 GET（像 /api/file/<id> 那样）——那种做法
+        # 等于给任何能打开本页面的脚本一张读图门票；这里走正常鉴权，由前端
+        # fetch 后自己转 blob，<img src> 也就不需要带自定义头了。
+        if u.path == "/api/artifact_preview":
+            rp = self._artifact_path(body.get("path"))
+            if rp is None:
+                return self._json({"ok": False, "error": "路径不在允许范围内（当前空间目录 / 外置结果目录）"})
+            if rp.suffix.lower() not in _ARTIFACT_IMAGE_EXT:
+                return self._json({"ok": False, "error": f"不是图片：{rp.suffix}"})
+            try:
+                if rp.stat().st_size > _ARTIFACT_PREVIEW_MAX_BYTES:
+                    return self._json({"ok": False, "error": "图片过大，请用系统查看器打开"})
+                data = rp.read_bytes()
+            except OSError as exc:
+                return self._json({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            import base64 as _b64
+
+            return self._json({
+                "ok": True,
+                "mime": _ARTIFACT_MIME.get(rp.suffix.lower(), "image/png"),
+                "b64": _b64.b64encode(data).decode("ascii"),
+            })
 
         if u.path == "/api/open_path":
             rp = self._artifact_path(body.get("path"))
@@ -1221,35 +1234,6 @@ class _Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self._fail(404, "附件文件已丢失")
             return self._send(200, data, str(meta.get("mime") or "image/png"))
-
-        # ---- 图片生成产物：只服务本进程生成的（id 认领），别无来源 ----
-        m = re.match(r"^/api/image/([0-9a-fA-F]+)$", path)
-        if m:
-            meta = self._owner.generated_images.get(m.group(1))
-            if meta is None:
-                return self._fail(404, "没有这张生成图")
-            p = Path(meta["path"])
-            try:
-                data = p.read_bytes()
-            except OSError:
-                return self._fail(404, "图片文件已丢失")
-            return self._send(200, data, str(meta.get("mime") or "image/png"))
-
-        # ---- 图片生成配置：当前设置 + 可用的 provider 列表（panel 预填用）----
-        if path == "/api/image/config":
-            cfg = _image_gen.load_config()
-            profiles = _image_gen.list_image_profiles()
-            # 选中的 provider 不在「可用」列表里（被删了 key）时，标为空让前端提示
-            if cfg["profile_id"] and not any(p["id"] == cfg["profile_id"] for p in profiles):
-                cfg = {**cfg, "profile_id": None}
-            return self._json(
-                {
-                    "ok": True,
-                    "config": cfg,
-                    "profiles": profiles,
-                    "sizes": _image_gen.SIZES,
-                }
-            )
 
         # ---- 自定义模型 profile ----
         if path == "/api/models":
@@ -1305,12 +1289,6 @@ class _Handler(BaseHTTPRequestHandler):
                     ],
                 }
             )
-
-        # ---- 自定义模型 profile ----
-        # GET  /api/models           列表（env 里的 key 原样给，value 脱敏显示）
-        # POST /api/models           整份保存（来自管理弹窗）
-        if path == "/api/models":
-            return self._json(self._models_payload())
 
         # 当前激活的模型信息（状态栏显示用）
         if path == "/api/model/active":
