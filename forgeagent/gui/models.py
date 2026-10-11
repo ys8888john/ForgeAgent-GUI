@@ -49,6 +49,23 @@ _ID_OK = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 MAX_PROFILES = 20
 _MAX_ENV_PER_PROFILE = 16
+_MAX_MODELS_PER_PROFILE = 40
+_MAX_CAPS_PER_MODEL = 8
+
+# 能力标签白名单：用户在「添加模型」弹窗里多选的东西，也是后面按能力
+# 分派任务（看图走视觉模型、画图走图像模型、看视频走视频模型……）的唯一依据。
+# 各家 /v1/models 只给 id、不给类型元数据，所以这份清单是**人工声明**而非探测 ——
+# 探测猜错的成本（把聊天请求发给 glm-image）远高于让用户点两下。
+CAPABILITIES: tuple[str, ...] = (
+    "文字",        # 通用对话 / 文本生成
+    "图像识别",    # 能吃图片输入（视觉）
+    "图像生成",    # 文生图
+    "视频识别",    # 能吃视频输入
+    "视频生成",    # 文生视频
+    "语音识别",    # 语音转文字
+    "语音合成",    # 文字转语音
+    "嵌入",        # embedding / 向量化
+)
 
 
 def models_path() -> Path:
@@ -134,15 +151,14 @@ def save_models(data: dict) -> dict:
                                     and "…" in newv and newv == f"{oldv[:3]}…{oldv[-3:]}"):
                     env[k] = oldv  # 缺失（留空不改）或原样传回的脱敏掩码 → 保留旧值
         p = {**p, "env": {k: v for k, v in env.items() if _ALLOWED_KEY.match(str(k))}}
-        # models：一个 provider 下可填多个模型（逗号分隔），供会话内随时切换。
+        # models：一个 provider 下可填多个模型（带能力标签），供会话内随时切换。
         # 以表单提交为准：显式带 models（即使是空列表）就按它来；表单没带
         # （单模型表单）就不保留旧列表，避免「编辑时删掉多余模型却没生效」。
         new_models = p.get("models")
         if new_models is not None:
-            ms = [str(m).strip() for m in new_models if str(m).strip()]
+            ms = normalize_models(new_models)
             if ms:
-                seen: set[str] = set()
-                p["models"] = [m for m in ms if not (m in seen or seen.add(m))]
+                p["models"] = ms
             else:
                 p.pop("models", None)
         merged[pid] = p  # id 重复：后者覆盖前者（列表顺序即优先级）
@@ -159,6 +175,59 @@ def save_models(data: dict) -> dict:
     )
     os.replace(tmp, p)
     return out
+
+
+def normalize_models(raw: object) -> list[dict]:
+    """把 profile 的 models 字段折成 [{"id": str, "caps": [str]}]。
+
+    两种入参形态都要认：
+      - 新：[{"id": "glm-image", "caps": ["图像生成"]}, ...]
+      - 旧：["glm-4.5-air", "glm-4.6", ...]（能力留空，读取侧回落到名字启发式）
+
+    返回的条目**总是**带 caps 键（可能为空列表）：空列表 = 「用户没标，按名字猜」，
+    跟 「用户明确标了零个能力」 在数据上无法区分 —— 但后者没有实际意义
+    （一个什么都不行的模型不该出现在列表里），所以不为此增加第三种状态。
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in list(raw)[:_MAX_MODELS_PER_PROFILE]:
+        mid = ""
+        caps: list[str] = []
+        if isinstance(item, dict):
+            mid = str(item.get("id") or item.get("name") or "").strip()
+            raw_caps = item.get("caps") or item.get("capabilities") or []
+            if isinstance(raw_caps, str):
+                raw_caps = [raw_caps]
+            if isinstance(raw_caps, (list, tuple)):
+                for c in list(raw_caps)[:_MAX_CAPS_PER_MODEL]:
+                    c = str(c).strip()
+                    if c in CAPABILITIES and c not in caps:
+                        caps.append(c)
+        else:
+            mid = str(item).strip()
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        out.append({"id": mid, "caps": caps})
+    return out
+
+
+def model_ids(raw: object) -> list[str]:
+    """只要模型 id 列表（给下拉框 / 切换用），兼容新旧两种形态。"""
+    if isinstance(raw, (list, tuple)) and not any(isinstance(x, dict) for x in raw):
+        seen: set[str] = set()
+        return [m for m in (str(x).strip() for x in raw) if m and not (m in seen or seen.add(m))]
+    return [m["id"] for m in normalize_models(raw)]
+
+
+def caps_of(raw: object, model_id: str) -> list[str]:
+    """某个模型显式声明的能力；没声明（或老格式）返回空列表。"""
+    for m in normalize_models(raw):
+        if m["id"] == model_id:
+            return m["caps"]
+    return []
 
 
 def sanitize_profile(p: dict) -> dict:
@@ -181,13 +250,11 @@ def sanitize_profile(p: dict) -> dict:
         v = "" if v is None else str(v)
         env[k] = v
     out = {"id": pid, "name": name[:40], "env": env}
-    models_raw = p.get("models")
-    if isinstance(models_raw, (list, tuple)):
-        seen: set[str] = set()
-        models = [str(m).strip() for m in models_raw if str(m).strip()]
-        models = [m for m in models if not (m in seen or seen.add(m))]
-        if models:
-            out["models"] = models
+    # models：一个 provider 下可填多个模型（带能力标签），纯元数据，
+    # 不受 AGENTD_* 白名单约束。老格式（纯字符串数组）在这里被规范化成新格式。
+    models = normalize_models(p.get("models"))
+    if models:
+        out["models"] = models
     return out
 
 

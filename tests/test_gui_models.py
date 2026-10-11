@@ -199,11 +199,11 @@ def test_select_switches_model_within_profile(server):
     data = json.loads(M.hotenv_path().read_text(encoding="utf-8"))
     assert data["AGENTD_ZHIPU_MODEL"] == "glm-4.6"
     assert data["AGENTD_ZHIPU_API_KEY"] == "sk-x"   # 其余字段沿用
-    # 选择同时落了盘：别的字段与多模型清单都不受影响
+    # 选择同时落了盘：别的字段与多模型清单都不受影响（models 已是新格式 [{id, caps}]）
     p = M.load_models()["profiles"][0]
     assert p["env"]["AGENTD_ZHIPU_MODEL"] == "glm-4.6"
     assert p["env"]["AGENTD_ZHIPU_API_KEY"] == "sk-x"
-    assert p["models"] == ["glm-4.5-air", "glm-4.6"]
+    assert M.model_ids(p["models"]) == ["glm-4.5-air", "glm-4.6"]
 
 
 def test_selected_model_shows_up_in_listing(server):
@@ -217,7 +217,7 @@ def test_selected_model_shows_up_in_listing(server):
     c.post("/api/model/select", {"id": "z1", "model": "glm-4.6"})
     p = c.get("/api/models")["profiles"][0]
     assert p["env"]["AGENTD_ZHIPU_MODEL"] == "glm-4.6"
-    assert p["models"] == ["glm-4.5-air", "glm-4.6"]
+    assert M.model_ids(p["models"]) == ["glm-4.5-air", "glm-4.6"]
 
 
 def test_select_unknown_profile_404(server):
@@ -354,3 +354,79 @@ def test_zero_disables_the_limit_rather_than_keeping_the_old_one():
     ]})
 
     assert M.env_for("p1")["AGENTD_MAX_CONTEXT_TOKENS"] == "0"
+
+
+# ---- 模型能力标签（{id, caps} 新格式）----
+#
+# 用户需求（2026-10-12）：provider 管理里每个模型单独弹窗填 ID + 多选能力
+# （文字 / 图像识别 / 图像生成 / 视频识别 / 视频生成…），后面按标签分派任务。
+# 能力是**人工声明**而非探测 —— 探测猜错的成本（把聊天请求发给 glm-image）
+# 远高于让用户点两下，所以白名单外的标签一律丢弃，而不是猜一个补上。
+
+def test_normalize_models_accepts_both_shapes():
+    # 新形态：{id, caps}
+    new = M.normalize_models([
+        {"id": "glm-4.6v", "caps": ["文字", "图像识别"]},
+        {"id": "glm-image", "caps": ["图像生成"]},
+    ])
+    assert new == [
+        {"id": "glm-4.6v", "caps": ["文字", "图像识别"]},
+        {"id": "glm-image", "caps": ["图像生成"]},
+    ]
+    # 旧形态：纯字符串数组 → 能力留空（读取侧回落到名字启发式）
+    old = M.normalize_models(["glm-4.5-air", "glm-4.6"])
+    assert old == [{"id": "glm-4.5-air", "caps": []}, {"id": "glm-4.6", "caps": []}]
+
+
+def test_normalize_models_filters_unknown_caps_and_dedupes():
+    out = M.normalize_models([
+        {"id": "m1", "caps": ["图像生成", "会飞", "", "图像生成"]},   # 未知/空/重复标签全丢
+        {"id": "m1", "caps": ["文字"]},                              # 同 id：先到先得
+        {"id": "", "caps": ["文字"]},                                # 空 id：整个条目丢弃
+    ])
+    assert out == [{"id": "m1", "caps": ["图像生成"]}]
+
+
+def test_caps_roundtrip_through_save_and_http(server):
+    c = _client(server)
+    models = [
+        {"id": "glm-4.5-air", "caps": ["文字"]},
+        {"id": "glm-4.6v", "caps": ["文字", "图像识别"]},
+        {"id": "glm-image", "caps": ["图像生成"]},
+    ]
+    r = c.post("/api/models", {"data": {"active": None, "profiles": [
+        {"id": "z1", "name": "智谱", "models": models,
+         "env": {"AGENTD_LLM_BACKEND": "zhipu", "AGENTD_ZHIPU_MODEL": "glm-4.5-air"}},
+    ]}})
+    assert r["ok"], r
+    # GET 层不能把 models 弄丢或脱敏 —— 标签是分派任务的依据，丢了就得重新标
+    p = c.get("/api/models")["profiles"][0]
+    assert p["models"] == models
+    # 读取侧：caps_of 按模型 id 取显式声明
+    assert M.caps_of(p["models"], "glm-image") == ["图像生成"]
+    assert M.caps_of(p["models"], "glm-4.6v") == ["文字", "图像识别"]
+    assert M.caps_of(p["models"], "没有的") == []
+
+
+def test_sanitize_profile_upgrades_legacy_string_models():
+    """老 models.json（纯字符串数组）经 sanitize 后升级成 {id, caps: []}，
+    不能报错、不能丢模型 —— 用户存量配置要无痛迁移。"""
+    p = M.sanitize_profile({
+        "id": "z1", "name": "智谱",
+        "env": {"AGENTD_LLM_BACKEND": "zhipu"},
+        "models": ["glm-4.5-air", "glm-4.6"],
+    })
+    assert p["models"] == [{"id": "glm-4.5-air", "caps": []},
+                           {"id": "glm-4.6", "caps": []}]
+
+
+def test_edit_replacing_models_rewrites_caps():
+    """编辑时换成新的模型清单（含标签）要整体生效，不能跟旧清单合并出脏数据。"""
+    M.save_models({"active": "p1", "profiles": [
+        {"id": "p1", "name": "P", "env": {}, "models": [{"id": "old", "caps": ["文字"]}]},
+    ]})
+    M.save_models({"active": "p1", "profiles": [
+        {"id": "p1", "name": "P", "env": {}, "models": [{"id": "new", "caps": ["图像生成"]}]},
+    ]})
+    p = M.load_models()["profiles"][0]
+    assert p["models"] == [{"id": "new", "caps": ["图像生成"]}]

@@ -725,11 +725,49 @@
     font-size: 12px; padding: 3px 6px; max-width: 220px;
     border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
   }
-  #models-pane, #mcp-pane, #space-new-pane {
+  #models-pane, #mcp-pane, #space-new-pane, #model-dlg {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35);
     z-index: 60; align-items: center; justify-content: center;
   }
-  #models-pane.open, #mcp-pane.open, #space-new-pane.open { display: flex; }
+  #models-pane.open, #mcp-pane.open, #space-new-pane.open, #model-dlg.open { display: flex; }
+  /* 模型编辑弹窗：比 models-pane 更靠前，否则会被父级遮罩盖住 */
+  #model-dlg { z-index: 70; }
+
+  /* ---- 编辑表单里的「模型清单」---- */
+  .m-models-row { display: block; }
+  .m-row-label { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+  .m-row-inline { display: flex; align-items: center; gap: 8px; }
+  .m-model-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .m-model-list:empty { display: none; }
+  .mm-item {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+  }
+  .mm-id {
+    font-family: var(--mono); font-size: 12px; color: var(--text);
+    flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .mm-caps { display: flex; gap: 4px; flex-wrap: wrap; flex: 1 1 auto; }
+  .mm-edit, .mm-del {
+    flex: none; font-size: 11px; padding: 1px 6px;
+  }
+  .mm-empty { font-size: 12px; color: var(--text-dim); }
+
+  /* ---- 能力标签多选（弹窗里）---- */
+  .md-caps-label { font-size: 12px; color: var(--text-dim); margin: 2px 0 6px; }
+  .md-caps { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .md-cap {
+    display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+    font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text-dim);
+    user-select: none;
+  }
+  .md-cap:hover { border-color: #b9c2d0; }
+  .md-cap.on {
+    background: #e8f0fe; border-color: #7d9de0; color: #24406e;
+  }
+  .md-cap .md-tick { font-size: 11px; opacity: 0; }
+  .md-cap.on .md-tick { opacity: 1; }
   /* 新建空间弹窗：空间名 + 目录（目录用原生对话框选，也允许手改） */
   #space-new-pane .sn-row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
   #space-new-pane .sn-row label { font-size: 12px; color: var(--text-dim); width: 64px; flex: 0 0 auto; }
@@ -1074,7 +1112,16 @@
         <div class="m-edit" id="m-edit">
           <div class="m-row"><input id="m-name" placeholder="显示名，如：智谱 GLM-4.5-air"></div>
           <div class="m-row"><input id="m-backend" placeholder="AGENTD_LLM_BACKEND，如 zhipu"></div>
-          <div class="m-row"><input id="m-model" placeholder="模型名，多个用逗号分隔，如 glm-4.5-air, glm-4.6（一个 provider 下可填多个，会话内随时切换）"></div>
+          <!-- 模型清单：不再让用户在逗号分隔的输入框里手打 —— 每个模型单独弹窗
+               填 ID + 勾能力标签，标签是后面按能力分派任务的唯一依据。 -->
+          <div class="m-row m-models-row">
+            <div class="m-row-label">模型清单</div>
+            <div id="m-model-list" class="m-model-list"></div>
+            <div class="m-row m-row-inline">
+              <button id="m-model-add" type="button">＋ 添加模型</button>
+              <span id="m-model-hint" class="m-media-hint"></span>
+            </div>
+          </div>
           <div class="m-row"><input id="m-baseurl" placeholder="Base URL（可选；ollama 后端写入 AGENTD_OLLAMA_HOST，其余写入 *_BASE_URL）"></div>
           <div class="m-row"><input id="m-apikey" type="password" placeholder="API Key（可选；留空 = 不改已有的）"></div>
           <div class="m-row m-row-split">
@@ -1121,6 +1168,29 @@
     <div class="m-actions m-foot">
       <button id="cf-ok" type="button">确定</button>
       <button id="cf-cancel" type="button">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 添加 / 编辑单个模型：填模型 ID + 多选能力标签。
+     ID 是发给接口的 model 名，能力标签是后面「按能力分派任务」的唯一依据
+     （看图走图像识别、画图走图像生成、看视频走视频识别……）。 -->
+<div id="model-dlg">
+  <div class="m-box" style="width:min(460px,calc(100vw - 48px))">
+    <div class="m-title" id="md-title">添加模型</div>
+    <div class="m-note m-note-sub">
+      填模型 ID（就是请求里 <span style="font-family:var(--mono)">model</span> 字段的值），
+      再勾上它具备的能力。
+    </div>
+    <div class="m-row"><input id="md-id" placeholder="模型 ID，如 glm-4.6v / glm-image" autocomplete="off"></div>
+    <div class="md-caps-label">能力标签（可多选）</div>
+    <div class="md-caps" id="md-caps"></div>
+    <div class="m-note m-note-sub">
+      一个都不勾 = 沿用按名字猜的默认标签（多数情况够用），保存后仍可回来改。
+    </div>
+    <div class="m-actions m-foot">
+      <button id="md-ok" type="button">确定</button>
+      <button id="md-cancel" type="button">取消</button>
     </div>
   </div>
 </div>
@@ -2389,6 +2459,10 @@
   var mEdit = document.getElementById("m-edit");
   var mList = document.getElementById("m-list");
   var editingId = null;   // 正在编辑的 profile id（null = 新增）
+  // 编辑表单里的模型草稿：[{id, caps}]。新增/编辑 profile 期间在内存里增删，
+  // 保存时才写进 profile.models —— 中途取消不会污染配置。
+  var draftModels = [];
+  var mdEditingIdx = -1;  // 「添加模型」弹窗正在改第几个（-1 = 新增）
   // 二级列表里每个 provider 的折叠状态 {profileId: true}。renderModelList 是整块
   // 重建 DOM 的，状态不记在内存里的话，每刷一次列表箭头就全弹回展开。
   var collapsedProviders = {};
@@ -2416,8 +2490,8 @@
     modelSelect.appendChild(def);
     profiles.forEach(function (p) {
       var env = p.env || {};
-      var models = (p.models && p.models.length) ? p.models : null;
-      if (models && models.length > 1) {
+      var models = modelIdsOf(p.models);
+      if (models.length > 1) {
         // 一个 provider 下多个模型：用 optgroup 把它们摊开，每项可单独热切换
         var og = document.createElement("optgroup");
         og.label = p.name;
@@ -2444,8 +2518,8 @@
         var aenv = ap.env || {};
         var aprefix = backendKeyPrefix(aenv["AGENTD_LLM_BACKEND"] || "");
         var amodel = aenv[aprefix + "MODEL"] || "";
-        var amodels = (ap.models && ap.models.length) ? ap.models : null;
-        sel = (amodels && amodels.length > 1) ? (active + "::" + amodel) : active;
+        var amodels = modelIdsOf(ap.models);
+        sel = (amodels.length > 1) ? (active + "::" + amodel) : active;
       }
     }
     modelSelect.value = sel;
@@ -2502,9 +2576,9 @@
   function profileFromForm() {
     var name = document.getElementById("m-name").value.trim();
     var backend = document.getElementById("m-backend").value.trim();
-    // 模型名支持逗号 / 换行分隔多个（一个 provider 下填多个模型，会话内随时切）
-    var modelField = document.getElementById("m-model").value;
-    var modelList = String(modelField).split(/[,\n]/).map(function (s) { return s.trim(); }).filter(Boolean);
+    // 模型清单来自 draft（每个条目 {id, caps}，由「添加模型」弹窗填出来），
+    // 不再是逗号分隔的输入框 —— 能力标签必须逐模型声明，一行文本装不下。
+    var modelList = draftModels.map(function (m) { return m.id; });
     var base = document.getElementById("m-baseurl").value.trim();
     var key = document.getElementById("m-apikey").value;  // key 不 trim，原样收
     var env = { "AGENTD_LLM_BACKEND": backend || "ollama" };
@@ -2535,7 +2609,10 @@
       return null;
     }
     var prof = { id: editingId || "", name: name || backend || "模型", env: env, _keepKey: !key };
-    if (modelList.length > 1) prof.models = modelList;  // 多模型：记到 profile 上，下拉框摊开
+    // 单个模型也照样记到 profile 上（带能力标签），否则一保存标签就丢了。
+    if (draftModels.length) prof.models = draftModels.map(function (m) {
+      return { id: m.id, caps: m.caps.slice() };
+    });
     return prof;
   }
 
@@ -2572,13 +2649,55 @@
       });
   }
 
-  // 这个 provider 名下的模型列表：显式 models 优先（多模型），否则回落到 env 里的那一个。
+  // 这个 provider 名下的模型 id 列表：显式 models 优先（多模型），否则回落到 env 里的那一个。
+  // models 有两种形态，都要认：新的是 [{id, caps}]，老的是纯字符串数组。
   function profileModels(p) {
     var env = p.env || {};
     var prefix = backendKeyPrefix(env["AGENTD_LLM_BACKEND"]);
-    if (p.models && p.models.length) return p.models.slice();
+    var ms = modelIdsOf(p.models);
+    if (ms.length) return ms;
     var one = env[prefix + "MODEL"] || env["AGENTD_OLLAMA_MODEL"] || "";
     return one ? [one] : [];
+  }
+
+  // models 字段 → id 数组（兼容新旧两种形态）
+  function modelIdsOf(raw) {
+    if (!raw || !raw.length) return [];
+    return raw.map(function (m) {
+      return (m && typeof m === "object") ? String(m.id || "").trim() : String(m || "").trim();
+    }).filter(Boolean);
+  }
+
+  // models 字段 → 条目数组（新形态；老的补上空 caps 表示"没标过"）
+  function modelEntriesOf(raw) {
+    if (!raw || !raw.length) return [];
+    var out = [];
+    raw.forEach(function (m) {
+      if (m && typeof m === "object") {
+        var id = String(m.id || "").trim();
+        if (id) out.push({ id: id, caps: Array.isArray(m.caps) ? m.caps.slice() : [] });
+      } else {
+        var s = String(m || "").trim();
+        if (s) out.push({ id: s, caps: [] });
+      }
+    });
+    return out;
+  }
+
+  // 模型能力标签的可选项。与后端 models.CAPABILITIES 一一对应（两家 /v1/models
+  // 都不给类型元数据，所以这份清单是**人工声明**的，不是探测出来的）。
+  var CAP_OPTIONS = ["文字", "图像识别", "图像生成", "视频识别", "视频生成",
+                     "语音识别", "语音合成", "嵌入"];
+
+  // 某个模型的能力：**显式标签优先，没标过才回落到按名字猜**。
+  // 显式优先是必须的 —— 名字启发式会把 glm-image 猜成"图像生成"，但用户可能
+  // 就是想把它标成别的能力；反过来也一样。
+  function modelCapsOf(p, mid) {
+    var entries = modelEntriesOf(p.models);
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].id === mid && entries[i].caps.length) return entries[i].caps.slice();
+    }
+    return modelCaps(mid);
   }
 
   // 模型能力标签（纯命名启发式，providers 的 /models 接口不给类型元数据）：
@@ -2601,6 +2720,136 @@
     s.textContent = text;
     return s;
   }
+
+  // ---- 编辑表单里的模型清单（草稿）----
+
+  function renderDraftModels() {
+    var box = document.getElementById("m-model-list");
+    box.innerHTML = "";
+    if (!draftModels.length) {
+      var empty = document.createElement("div");
+      empty.className = "mm-empty";
+      empty.textContent = "（还没加模型；也可以留空，保存后沿用「Base URL 测试连接」探到的 / env 里的那个）";
+      box.appendChild(empty);
+      return;
+    }
+    draftModels.forEach(function (m, idx) {
+      var row = document.createElement("div");
+      row.className = "mm-item";
+      var idEl = document.createElement("span");
+      idEl.className = "mm-id";
+      idEl.textContent = m.id;
+      idEl.title = m.id;
+      var capsEl = document.createElement("span");
+      capsEl.className = "mm-caps";
+      // 没勾过标签的显示「猜」出来的默认能力，并标一句来源，免得看着像"我已经选过了"
+      var caps = m.caps.length ? m.caps : modelCaps(m.id);
+      caps.forEach(function (c) {
+        var b = capBadge(c);
+        if (!m.caps.length) b.style.opacity = ".55";
+        capsEl.appendChild(b);
+      });
+      if (!m.caps.length) {
+        var guess = document.createElement("span");
+        guess.className = "mp-cap";
+        guess.style.opacity = ".55";
+        guess.textContent = "按名字猜";
+        capsEl.appendChild(guess);
+      }
+      var editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "mm-edit";
+      editBtn.textContent = "改";
+      editBtn.addEventListener("click", function () { openModelDlg(idx); });
+      var delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "mm-del";
+      delBtn.textContent = "×";
+      delBtn.title = "移除这个模型";
+      delBtn.addEventListener("click", function () {
+        draftModels.splice(idx, 1);
+        renderDraftModels();
+      });
+      row.appendChild(idEl); row.appendChild(capsEl);
+      row.appendChild(editBtn); row.appendChild(delBtn);
+      box.appendChild(row);
+    });
+  }
+
+  // ---- 「添加 / 编辑模型」弹窗 ----
+
+  var mdSelected = {};   // 弹窗里当前勾上的能力
+
+  function renderCapChips() {
+    var box = document.getElementById("md-caps");
+    box.innerHTML = "";
+    CAP_OPTIONS.forEach(function (c) {
+      var el = document.createElement("span");
+      el.className = "md-cap" + (mdSelected[c] ? " on" : "");
+      var tick = document.createElement("span");
+      tick.className = "md-tick";
+      tick.textContent = "✓";
+      el.appendChild(tick);
+      el.appendChild(document.createTextNode(c));
+      el.addEventListener("click", function () {
+        if (mdSelected[c]) delete mdSelected[c];
+        else mdSelected[c] = true;
+        el.classList.toggle("on", !!mdSelected[c]);
+      });
+      box.appendChild(el);
+    });
+  }
+
+  function openModelDlg(idx) {
+    mdEditingIdx = (typeof idx === "number") ? idx : -1;
+    var cur = (mdEditingIdx >= 0) ? draftModels[mdEditingIdx] : null;
+    document.getElementById("md-title").textContent = cur ? "编辑模型" : "添加模型";
+    document.getElementById("md-id").value = cur ? cur.id : "";
+    mdSelected = {};
+    (cur ? cur.caps : []).forEach(function (c) { mdSelected[c] = true; });
+    renderCapChips();
+    document.getElementById("model-dlg").classList.add("open");
+    try { document.getElementById("md-id").focus({ preventScroll: true }); } catch (e) {}
+  }
+
+  function closeModelDlg() {
+    document.getElementById("model-dlg").classList.remove("open");
+    mdEditingIdx = -1;
+  }
+
+  function confirmModelDlg() {
+    var hint = document.getElementById("m-model-hint");
+    var id = document.getElementById("md-id").value.trim();
+    if (!id) { hint.textContent = "模型 ID 不能为空"; hint.className = "m-media-hint err"; return; }
+    // 同名只允许一个：两个 glmx 在下拉里长得一样、切换时根本分不清谁是谁
+    var dup = draftModels.findIndex(function (m, i) { return m.id === id && i !== mdEditingIdx; });
+    if (dup >= 0) { hint.textContent = "已经有这个模型了"; hint.className = "m-media-hint err"; return; }
+    var caps = CAP_OPTIONS.filter(function (c) { return mdSelected[c]; });
+    var entry = { id: id, caps: caps };
+    if (mdEditingIdx >= 0) draftModels[mdEditingIdx] = entry;
+    else draftModels.push(entry);
+    closeModelDlg();
+    hint.textContent = ""; hint.className = "m-media-hint";
+    renderDraftModels();
+  }
+
+  document.getElementById("m-model-add").addEventListener("click", function () { openModelDlg(-1); });
+  document.getElementById("md-ok").addEventListener("click", confirmModelDlg);
+  document.getElementById("md-cancel").addEventListener("click", closeModelDlg);
+  document.getElementById("model-dlg").addEventListener("click", function (e) {
+    if (e.target === document.getElementById("model-dlg")) closeModelDlg();
+  });
+  document.getElementById("md-id").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") confirmModelDlg();
+  });
+  // Esc 关的是**弹窗**，不是整个模型管理 —— 弹窗在里层，先响应、并拦住冒泡，
+  // 否则一次 Esc 会把父级面板一起收掉（用户以为自己只关了弹窗）。
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (!document.getElementById("model-dlg").classList.contains("open")) return;
+    closeModelDlg();
+    e.stopPropagation();
+  }, true);
 
   // 该 provider 当前生效的模型（env 里那个 MODEL，切模型后由后端落回 models.json）。
   function currentModelOf(p) {
@@ -2753,13 +3002,14 @@
       var mname = document.createElement("span");
       mname.className = "mp-mname"; mname.textContent = m;
       row.appendChild(dot); row.appendChild(mname);
-      // 能力标签：让用户一眼看出这个模型能干什么（文字 / 图像识别 / 图像生成）
-      modelCaps(m).forEach(function (c) { row.appendChild(capBadge(c)); });
+      // 能力标签：让用户一眼看出这个模型能干什么（文字 / 图像识别 / 图像生成…）
+      var caps = modelCapsOf(p, m);
+      caps.forEach(function (c) { row.appendChild(capBadge(c)); });
       if (isCur) {
         var use = document.createElement("span");
         use.className = "mp-use"; use.textContent = "使用中";
         row.appendChild(use);
-      } else if (modelCaps(m).indexOf("文字") < 0) {
+      } else if (caps.indexOf("文字") < 0) {
         // 纯图像生成模型（glm-image / cogview-3-plus…）：切过去当聊天模型必然报错，
         // 所以这一行不给点击，直接把正确用法写在 title 上。
         row.classList.add("gen-only");
@@ -2797,14 +3047,14 @@
     var prefix = backendKeyPrefix(env["AGENTD_LLM_BACKEND"]);
     // API Key 永不回填（后端给的也是掩码）；留空提交 = 后端 merge 保留旧值
     document.getElementById("m-apikey").value = "";
-    // 多模型 profile：把 models 列表拼回输入框（逗号分隔）；否则回填当前 MODEL
-    var modelField = "";
-    if (p.models && p.models.length) {
-      modelField = p.models.join(", ");
-    } else {
-      modelField = env[prefix + "MODEL"] || env["AGENTD_OLLAMA_MODEL"] || "";
+    // 模型清单进草稿（带能力标签）；老的纯字符串列表在这里升级成 {id, caps}
+    draftModels = modelEntriesOf(p.models);
+    if (!draftModels.length) {
+      var one0 = env[prefix + "MODEL"] || env["AGENTD_OLLAMA_MODEL"] || "";
+      if (one0) draftModels = [{ id: one0, caps: [] }];
     }
-    document.getElementById("m-model").value = modelField;
+    renderDraftModels();
+    document.getElementById("m-model-hint").textContent = "";
     var baseKeys = ["AGENTD_OLLAMA_HOST", "AGENTD_OPENAI_BASE_URL", "AGENTD_MIMO_BASE_URL", "AGENTD_ZHIPU_BASE_URL"];
     var base = "";
     for (var i = 0; i < baseKeys.length; i++) {
@@ -2825,7 +3075,7 @@
     mEdit.classList.add("open");
     try { mEdit.scrollIntoView({ block: "end", behavior: "auto" }); }
     catch (e) { mEdit.scrollIntoView(false); }
-    try { document.getElementById("m-model").focus({ preventScroll: true }); } catch (e) {}
+    try { document.getElementById("m-name").focus({ preventScroll: true }); } catch (e) {}
   }
 
   function deleteModel(id) {
@@ -2842,10 +3092,13 @@
 
   document.getElementById("m-add").addEventListener("click", function () {
     editingId = null;
-    ["m-name", "m-backend", "m-model", "m-baseurl", "m-apikey",
+    ["m-name", "m-backend", "m-baseurl", "m-apikey",
      "m-maxctx", "m-maxout"].forEach(function (id) {
       document.getElementById(id).value = "";
     });
+    draftModels = [];
+    renderDraftModels();
+    document.getElementById("m-model-hint").textContent = "";
     revealEditForm();
   });
 
