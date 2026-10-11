@@ -418,6 +418,77 @@ read/search/edit、允许时文件真的落盘 / 拒绝时文件绝不存在、�
 后端指过去。真正"Bing 的页面结构还认得出来吗"那一问由 agentd 自己的
 `tests/test_web_tools_live.py` 负责（那个才需要出网）。
 
+### 图片生成
+
+参考 WorkBuddy 的方案，**独立**于 agentd 做了一套图片生成：不依赖 agent 连通性、
+不走 ACP、不发工具调用，而是直接调一个 OpenAI 兼容的 `images/generations` 接口，
+把结果以"用户气泡 + 缩略图网格"的形式渲染进当前会话，缩略图可点开大图、下载、
+或一键在文件管理器里打开。
+
+**为什么要和 agent 解耦。** 图片生成是纯本地能力——凭据来自你自己的模型配置、
+渲染发生在前端、和"有没有连上 agentd、有没有配 LLM"完全无关。WorkBuddy 把图片
+生成做成这种"独立工具"：哪怕 agent 进程没起来，按钮照样能点、照样出图。这里也照此
+设计，点 🎨 不要求任何 agent 状态。
+
+**怎么用：**
+
+- 输入栏右侧的 🎨 按钮（`#img-gen-btn`），或欢迎页底部的「🎨 生成图片」按钮
+  （`#w-img-gen`）—— 两个入口开同一个面板。
+- 面板里填：
+  - **提示词**：要画什么（必填，空了会被拦下并提示）。
+  - **服务商（provider）**：下拉选一个「模型管理」里配好的 `openai_compat` 配置
+    （见下）。若根本没有 `openai_compat` 配置，生成按钮会被禁用并提示先去配一个；
+    若没手动选，面板会默认挑列表里第一个可用的。
+  - **图像模型**：默认沿用所选「服务商」的模型（来自该 profile 的
+    `AGENTD_OPENAI_MODEL`），也可手动改成其它（如 `dall-e-3` / `cogview-3-plus`）；
+    若服务商没设模型、这里也留空，后端会明确报错"未指定图像模型"，不会半路静默失败。
+  - **尺寸**：`1024x1024` / `1024x1792` / `1792x1024` / `512x512` / `768x1344` /
+    `864x1152`，默认 `1024x1024`。
+  - **数量**：1–4 张，默认 1。
+- 点「生成」，后端拉接口成功后返回一个**用户气泡**：头部是提示词，下面是缩略图
+  网格。每张图：点缩略图开**灯箱大图**（`#lightbox`）；有「下载」直链
+  （`/api/image/<id>`，base64 落盘后 HTTP 再读回）；还有「在文件夹打开」按钮，
+  后端 `POST /api/open_path` 调系统文件管理器定位到落盘文件。
+
+**凭据复用（关键）。** 图片生成**不另起一套密钥体系**，直接吃「模型管理」里已有的
+`openai_compat` 配置：面板"服务商"下拉就是从 `models.json` 里筛出带
+`AGENTD_OPENAI_API_KEY` 的 profile（`list_image_profiles()`），把它们当成图片接口
+的 base_url / 鉴权头。所以只要某处配过一个 OpenAI 兼容的 LLM（OpenAI 或任意兼容
+端点），图片生成立刻能用，无需二次填密钥。没配的话页面会明确提示，而不是报错在
+半路。Ollama / fake / script 这类没有图像接口的 profile 不会出现在下拉里。
+
+**配置落盘。** 当前选的服务商 / 模型 / 尺寸 / 数量存在 `~/.agentd/gui/imagegen.json`
+（`profile_id` / `model` / `size` / `n`），下次开面板自动回填；选中的 provider 若被
+改得没了 key，打开面板会标记为"未选"并提示重选。
+
+**接口（token 校验同主服务，但 `/api/image/<id>` 免 token）。** 因为 `<img>` 的
+`src` 带不了 `X-ForgeAgent-Token` 头，所以读图接口跟 `/api/file/<id>` 一样从鉴权里
+豁免——只服务本进程登记过的 id，别无来源：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| `GET` | `/api/image/config` | 返回 `{ok, config, profiles, sizes}`（profiles 是可选服务商列表） |
+| `POST` | `/api/image/config` | 保存配置到 imagegen.json |
+| `POST` | `/api/image/generate` | 生成：body 带 prompt / profile_id / model / size / n |
+| `GET` | `/api/image/<hexid>` | 按 id 读图字节，免 token，供 `<img src>` 直连 |
+
+`/api/image/generate` 返回 `{ok, id, prompt, model, size, images:[{id, path, mime,
+url, name}]}`；`ok:False` 时带 `error`（提示词空 / 没选 provider / 没 key / 接口报错
+都走这里，前端原样显示，不会崩）。
+
+**落盘与白名单。** 生成图统一写到 agentd 的 blobstore 外置输出根目录下的
+`tool_results_root/imagegen/`（这个目录已在产物白名单内，下载/打开不受限）；每个
+文件用一个 `secrets.token_hex(8)` 的不可猜 id 登记进服务进程的 `generated_images`
+内存表，前端拿到的 `url` 就是 `/api/image/<id>`。支持 `b64_json`（直出）和 `url`
+（后端再回源抓一次字节，避免某些 provider 的临时 URL 过期/需代理导致前端取不到图）
+两种返回形态，MIME 按返回内容或扩展名推断。
+
+后端实现在 `forgeagent/gui/image_gen.py`（纯标准库、无 GUI 依赖、可单测）；HTTP
+封装在 `server.py` 的 `_handle_image_generate()` 与 `_api_get()` / `do_POST()` 里；
+前端面板、灯箱、缩略图网格都在 `assets/index.html`（新增 `#img-gen-pane` 与
+`#lightbox`，零外部依赖）。单测在 `tests/test_image_gen.py`（16 个用例，覆盖配置
+读写、profile 筛选、b64/url 两种返回、HTTP 错误与缺 key/缺模型等分支）。
+
 ### 三跳验证
 
 前端 → 后端 → Ollama，任一节断掉症状都长得差不多（"没反应"或"一片空白"），
@@ -457,6 +528,7 @@ forgeagent/
     server.py       本机 UI 服务：bridge 的 HTTP 封装 + 静态页面（含 token 校验）
     mcp_config.py   读 mcp.json → 转成 ACP session/new 要的 mcpServers 结构
     mcp_presets.py  本地 MCP server 预设：venv 路径推断 / 条目生成 / 配置合并
+    image_gen.py    图片生成：调 OpenAI 兼容 images/generations，配置存 imagegen.json
     assets/         HTML 前端（HTML/CSS/JS，无外部依赖、离线可用）
     __main__.py     GUI 入口（--mode 选前端载体）
 electron/          Electron 壳（main.js + package.json），默认前端载体：
@@ -477,6 +549,7 @@ tests/
   test_app.py          TUI 冒烟（headless）
   test_gui_bridge.py   桥接层单测（注入假 client，无需图形环境）
   test_gui_server.py   本机 UI 服务单测：真起 HTTP 服务，真发请求
+  test_image_gen.py    图片生成单测：配置读写 / provider 筛选 / b64 与 url 两种返回 / HTTP 错误
   test_gui_mcp_config.py  mcp.json 解析单测（含"必填字段不能省"的回归）
   test_mcp_presets.py     本地 MCP 预设单测：venv 路径 / 条目必填字段 / 配置合并
   test_gui_tool_kinds.py  界面文案单测：每个 ACP kind / status 都得有中文标签

@@ -714,11 +714,11 @@
     font-size: 12px; padding: 3px 6px; max-width: 220px;
     border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
   }
-  #models-pane, #mcp-pane, #space-new-pane {
+  #models-pane, #mcp-pane, #space-new-pane, #img-gen-pane {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35);
     z-index: 60; align-items: center; justify-content: center;
   }
-  #models-pane.open, #mcp-pane.open, #space-new-pane.open { display: flex; }
+  #models-pane.open, #mcp-pane.open, #space-new-pane.open, #img-gen-pane.open { display: flex; }
   /* 新建空间弹窗：空间名 + 目录（目录用原生对话框选，也允许手改） */
   #space-new-pane .sn-row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
   #space-new-pane .sn-row label { font-size: 12px; color: var(--text-dim); width: 64px; flex: 0 0 auto; }
@@ -893,6 +893,85 @@
   .toast-title { font-size: 13px; font-weight: 600; color: var(--text); }
   .toast-detail { font-size: 12px; color: var(--text-dim); line-height: 1.5; margin-top: 3px; }
 
+  /* ---- 图片生成面板 ---- */
+  .img-gen-card {
+    width: 92%; max-width: 520px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.22); overflow: hidden;
+  }
+  .img-gen-head-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid var(--border);
+  }
+  .img-gen-title { font-size: 15px; font-weight: 600; color: var(--text); }
+  .pane-x {
+    border: none; background: transparent; font-size: 22px; line-height: 1;
+    color: var(--text-dim); cursor: pointer; padding: 0 4px;
+  }
+  .pane-x:hover { color: var(--text); }
+  .img-gen-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .ig-label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+  #ig-prompt {
+    width: 100%; resize: vertical; min-height: 64px; box-sizing: border-box;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+    color: var(--text); padding: 10px; font: inherit; line-height: 1.5;
+  }
+  .ig-row { display: flex; gap: 12px; }
+  .ig-field { flex: 1; min-width: 0; }
+  .ig-field select, .ig-field input {
+    width: 100%; box-sizing: border-box; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--bg); color: var(--text);
+    padding: 8px 10px; font: inherit;
+  }
+  .ig-hint { font-size: 12px; color: var(--text-dim); min-height: 16px; }
+  .ig-hint:empty { min-height: 0; }
+  #ig-generate {
+    align-self: flex-end; padding: 9px 22px; font-size: 14px; cursor: pointer;
+    background: var(--accent); color: #fff; border: 1px solid var(--accent);
+    border-radius: 8px;
+  }
+  #ig-generate:hover:not(:disabled) { background: #1d4ed8; }
+  #ig-generate:disabled { opacity: .55; cursor: not-allowed; }
+
+  /* ---- 对话内的图片生成结果卡 ---- */
+  .img-gen-result .img-gen-head {
+    font-size: 13px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px;
+  }
+  .img-gen-prompt {
+    background: var(--code-bg); border-radius: 8px; padding: 8px 10px;
+    font-size: 13px; color: var(--text); margin-bottom: 10px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .img-gen-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+  .img-gen-cell {
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    background: var(--bg); width: 200px; max-width: 100%;
+  }
+  .img-gen-cell img {
+    display: block; width: 100%; height: auto; cursor: zoom-in;
+    background: repeating-conic-gradient(#eee 0 25%, #fafafa 0 50%) 50% / 16px 16px;
+  }
+  .img-gen-bar {
+    display: flex; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--border);
+  }
+  .img-gen-act {
+    font-size: 12px; color: var(--accent); cursor: pointer; text-decoration: none;
+    background: transparent; border: none; padding: 2px 4px;
+  }
+  .img-gen-act:hover { text-decoration: underline; }
+
+  /* ---- 图片放大灯箱 ---- */
+  #lightbox {
+    display: none; position: fixed; inset: 0; z-index: 120;
+    background: rgba(0,0,0,.82); align-items: center; justify-content: center;
+    cursor: zoom-out;
+  }
+  #lightbox.open { display: flex; }
+  #lightbox img {
+    max-width: 92vw; max-height: 92vh; border-radius: 6px;
+    box-shadow: 0 12px 60px rgba(0,0,0,.5);
+  }
+
 </style>
 </head>
 <body>
@@ -958,6 +1037,7 @@
           </div>
           <div class="w-meta">
             <button id="w-attach" class="w-attachbtn" type="button" title="添加图片（也可直接 Ctrl+V 粘贴截图）"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></button>
+            <button id="w-img-gen" class="w-attachbtn" type="button" title="生成图片（调用兼容 OpenAI 的图像接口）">🎨</button>
             <span class="w-frag" id="w-model" title="点这里切换模型（与顶部下拉等价）">…</span>
             <button id="w-send" class="w-sendbtn" type="button" title="发送（Enter）">➤</button>
           </div>
@@ -985,6 +1065,7 @@
       <div id="attach-strip"></div>
       <div id="composer-row">
         <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行，可附图片）"></textarea>
+        <button id="img-gen-btn" type="button" title="生成图片（调用兼容 OpenAI 的图像接口）">🎨</button>
         <button id="attach" type="button" title="附加图片（发给模型识别）"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></button>
         <button id="send">发送</button>
         <button id="stop" disabled title="停止当前生成（中断后仍保留已生成的部分）">停止</button>
@@ -1126,6 +1207,54 @@
     <div class="ctx-sep"></div>
     <button class="ctx-item danger" id="ctx-hide" type="button">从列表中删除</button>  </div>
 </div>
+
+  <!-- 图片生成面板：点 composer 的 🎨 弹出。复用 openai_compat 类 provider 的图像接口 -->
+  <div id="img-gen-pane">
+    <div class="img-gen-card">
+      <div class="img-gen-head-row">
+        <span class="img-gen-title">生成图片</span>
+        <button id="ig-close" class="pane-x" type="button" title="关闭">×</button>
+      </div>
+      <div class="img-gen-body">
+        <div>
+          <label class="ig-label" for="ig-prompt">提示词</label>
+          <textarea id="ig-prompt" rows="3" placeholder="描述你想生成的画面…"></textarea>
+        </div>
+        <div class="ig-row">
+          <div class="ig-field">
+            <label class="ig-label" for="ig-profile">Provider</label>
+            <select id="ig-profile"></select>
+          </div>
+          <div class="ig-field">
+            <label class="ig-label" for="ig-model">图像模型</label>
+            <input id="ig-model" type="text" placeholder="如 dall-e-3">
+          </div>
+        </div>
+        <div class="ig-row">
+          <div class="ig-field">
+            <label class="ig-label" for="ig-size">尺寸</label>
+            <select id="ig-size"></select>
+          </div>
+          <div class="ig-field">
+            <label class="ig-label" for="ig-n">张数</label>
+            <select id="ig-n">
+              <option value="1">1 张</option>
+              <option value="2">2 张</option>
+              <option value="3">3 张</option>
+              <option value="4">4 张</option>
+            </select>
+          </div>
+        </div>
+        <div id="ig-hint" class="ig-hint"></div>
+        <button id="ig-generate" type="button">生成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 图片放大灯箱：点对话里的缩略图打开，再点任意处关闭 -->
+  <div id="lightbox">
+    <img id="lightbox-img" src="" alt="">
+  </div>
 
 <script>
 (function () {
@@ -3973,6 +4102,14 @@
     fileInput.value = "";
     fileInput.click();
   });
+  // 欢迎页也提供「生成图片」入口（与 composer 里的 🎨 同一条 openImageGen）
+  var wImgGenBtn = document.getElementById("w-img-gen");
+  if (wImgGenBtn) {
+    wImgGenBtn.addEventListener("click", function () {
+      if (busy) return;
+      openImageGen();
+    });
+  }
   fileInput.addEventListener("change", function () {
     addPendingImages(fileInput.files);
   });
@@ -4189,6 +4326,161 @@
       setStatus("error", "连不上本机服务（请用 forgeagent-gui 启动，别直接双击打开 html）");
     }
   );
+  // ---- 图片生成面板 ----
+  var igPane = document.getElementById("img-gen-pane");
+  var igPrompt = document.getElementById("ig-prompt");
+  var igProfile = document.getElementById("ig-profile");
+  var igModel = document.getElementById("ig-model");
+  var igSize = document.getElementById("ig-size");
+  var igN = document.getElementById("ig-n");
+  var igHint = document.getElementById("ig-hint");
+  var igGenerate = document.getElementById("ig-generate");
+  var lightbox = document.getElementById("lightbox");
+  var lightboxImg = document.getElementById("lightbox-img");
+
+  function openImageGen() {
+    if (!started) return;
+    loadImageGenConfig();
+    igPane.classList.add("open");
+    setTimeout(function () { igPrompt.focus(); }, 30);
+  }
+  function closeImageGen() { igPane.classList.remove("open"); }
+
+  document.getElementById("img-gen-btn").addEventListener("click", openImageGen);
+  document.getElementById("ig-close").addEventListener("click", closeImageGen);
+  igPane.addEventListener("click", function (e) { if (e.target === igPane) closeImageGen(); });
+
+  function loadImageGenConfig() {
+    api("/api/image/config").then(function (r) {
+      if (!r || !r.ok) { igHint.textContent = "读取配置失败"; return; }
+      var cfg = r.config || {};
+      var profiles = r.profiles || [];
+      var sizes = r.sizes || [];
+      var picked = cfg.profile_id || "";
+      igProfile.innerHTML = "";
+      if (!profiles.length) {
+        var none = document.createElement("option");
+        none.value = ""; none.textContent = "（无可用 provider）";
+        igProfile.appendChild(none);
+        igHint.textContent = "没有可用的图像 provider：请先在「设置 → 模型管理」加一个 openai_compat 类模型（含 API Key）。";
+        igGenerate.disabled = true;
+        return;
+      }
+      igGenerate.disabled = false;
+      igHint.textContent = "";
+      profiles.forEach(function (p) {
+        var o = document.createElement("option");
+        o.value = p.id; o.textContent = p.name;
+        if (p.id === picked) o.selected = true;
+        igProfile.appendChild(o);
+      });
+      // 没有显式选中的就用第一个 profile
+      if (!picked && profiles[0]) { picked = profiles[0].id; igProfile.value = picked; }
+      var useProfile = profiles.filter(function (p) { return p.id === picked; })[0] || profiles[0];
+      igModel.value = cfg.model || (useProfile && useProfile.model) || "";
+      igModel.placeholder = (useProfile && useProfile.model) || "如 dall-e-3 / cogview-3-plus";
+      igSize.innerHTML = "";
+      sizes.forEach(function (s) {
+        var o = document.createElement("option");
+        o.value = s; o.textContent = s;
+        if (s === (cfg.size || "1024x1024")) o.selected = true;
+        igSize.appendChild(o);
+      });
+      igN.value = String(cfg.n || 1);
+    }).catch(function (e) {
+      igHint.textContent = "读取配置失败：" + String((e && e.message) || e);
+    });
+  }
+
+  igGenerate.addEventListener("click", function () {
+    var prompt = igPrompt.value.trim();
+    if (!prompt) { igHint.textContent = "提示词不能为空"; return; }
+    var profile_id = igProfile.value;
+    if (!profile_id) { igHint.textContent = "请先选择 provider"; return; }
+    var model = igModel.value.trim();
+    var size = igSize.value;
+    var n = parseInt(igN.value, 10) || 1;
+    // 记住本次选择（provider / 模型 / 尺寸 / 张数），下次打开预填
+    api("/api/image/config", {
+      method: "POST",
+      body: { config: { profile_id: profile_id, model: model, size: size, n: n } }
+    }).catch(function () {});
+    igGenerate.disabled = true;
+    igHint.textContent = "生成中…";
+    api("/api/image/generate", {
+      method: "POST",
+      body: { prompt: prompt, profile_id: profile_id, model: model, size: size, n: n }
+    }).then(function (r) {
+      if (!r || !r.ok) {
+        igHint.textContent = (r && r.error) || "生成失败";
+        igGenerate.disabled = false;
+        return;
+      }
+      renderImageResult(prompt, r.images || [], r.model);
+      closeImageGen();
+      showToast("图片已生成", "生成了 " + ((r.images && r.images.length) || 0) + " 张");
+    }).catch(function (e) {
+      igHint.textContent = "生成失败：" + String((e && e.message) || e);
+      igGenerate.disabled = false;
+    });
+  });
+
+  // 对话内渲染一张「图片生成」结果卡：用户提示词 + 图片缩略图网格。
+  // 与 WorkBuddy 一致——图片直接落在会话里，可点开大图、可下载/在文件夹打开。
+  function renderImageResult(prompt, images, model) {
+    var g = newBubble("user");
+    g.classList.add("img-gen-result");
+    var head = document.createElement("div");
+    head.className = "img-gen-head";
+    head.textContent = "🎨 生成图片" + (model ? " · " + model : "");
+    g.appendChild(head);
+    if (prompt) {
+      var p = document.createElement("div");
+      p.className = "img-gen-prompt";
+      p.textContent = prompt;
+      g.appendChild(p);
+    }
+    var grid = document.createElement("div");
+    grid.className = "img-gen-grid";
+    images.forEach(function (im) {
+      var cell = document.createElement("div");
+      cell.className = "img-gen-cell";
+      var img = document.createElement("img");
+      img.src = im.url; img.alt = prompt || "generated"; img.loading = "lazy";
+      img.addEventListener("click", function () { openLightbox(im.url); });
+      cell.appendChild(img);
+      var bar = document.createElement("div");
+      bar.className = "img-gen-bar";
+      var dl = document.createElement("a");
+      dl.href = im.url; dl.download = im.name || "image.png";
+      dl.className = "img-gen-act"; dl.textContent = "下载";
+      bar.appendChild(dl);
+      var openBtn = document.createElement("button");
+      openBtn.type = "button"; openBtn.className = "img-gen-act"; openBtn.textContent = "打开";
+      openBtn.addEventListener("click", function () {
+        api("/api/open_path", { method: "POST", body: { path: im.path } })
+          .catch(function (e) { showErrorBubble("打开失败", String((e && e.message) || e)); });
+      });
+      bar.appendChild(openBtn);
+      cell.appendChild(bar);
+      grid.appendChild(cell);
+    });
+    g.appendChild(grid);
+    messages.appendChild(g);
+    attachCopy(g);
+    if (autoScroll) scrollToBottom();
+    return g;
+  }
+
+  function openLightbox(url) {
+    lightboxImg.src = url;
+    lightbox.classList.add("open");
+  }
+  lightbox.addEventListener("click", function () {
+    lightbox.classList.remove("open");
+    lightboxImg.src = "";
+  });
+
   // 自动化 UI 测试钩子（Electron harness 用）：只暴露引用，不改任何行为。
   // 页面主逻辑全在闭包里，外部测试拿不到 upsertTool / messages —— 没这个
   // 句柄就只能靠真实后端事件驱动，单测没法复刻「14 连工具调用」这类序列。

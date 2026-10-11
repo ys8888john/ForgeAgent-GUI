@@ -57,12 +57,20 @@ def test_inline_shows_only_latest_and_tray_click_reveals_folder():
     raw = _index()
     # 内联替换：新产物出现时旧的降级（turnInline.row.remove()）
     assert "turnInline" in raw and "turnInline.row.remove()" in raw
-    # 产物条挂在消息流末尾（模型最终回复的下面），不是塞进工具卡：
-    # order:9998 排在正文气泡(order:0)之后、托盘(9999)之前。
+    # 产物条挂在消息流末尾（模型最终回复的下面），不是塞进工具卡。
+    # 2026-10-13 修正：不再用 order:9998 把它钉在 #messages 最底 —— 那样第二轮
+    # 进行时第一轮的产物仍浮在最下面（用户反馈「下一轮应是全新的」）。现在走
+    # 正常文档流（不给 order），轮末 done 时再 insertBefore(trayEl) 归位到本轮
+    # 正文之后：既落在回复下面，又锚在「产生它的那一轮」区间内。
     assert "artifact-inline" in raw
-    assert "order: 9998" in raw
     assert "messages.appendChild(built.row)" in raw
     assert "card.appendChild(built.row)" not in raw
+    # 回归防线：「钉死在最底」的 order:9998 不许回来
+    assert "order: 9998" not in raw
+    # 轮末归位：插到托盘之前
+    assert "messages.insertBefore(turnInline.row, trayEl)" in raw
+    # 新一轮只放掉引用（不删上一轮的卡片），resetTray 另算一处
+    assert raw.count("turnInline = null") >= 2
     # 托盘点击不再展开列表，而是 reveal 到文件管理器
     assert "revealLatest" in raw
     assert 'reveal: true' in raw
