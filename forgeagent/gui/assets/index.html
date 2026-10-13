@@ -210,7 +210,6 @@
     font-size: 12px; padding: 3px 9px; color: var(--accent); border-color: var(--accent);
   }
   #sidebar-head #new-chat:hover { background: #e8f0fe; }
-  #mode-select { max-width: 120px; font-size: 12px; padding: 3px 6px; }
   /* overflow-x: hidden 兜住横向滚动条 —— 只有纵向滚动才是这里该有的行为。
      光靠子项的 min-width:0 还不够：万一将来又往行里加了会撑宽的元素，
      列表会静默多出一条横向滚动条（上一版就是这样，被截图抓出来的）。 */
@@ -282,13 +281,13 @@
      （"+空 间"、"模 型 管 理" 一字一行就是收缩失控的样子），更不能溢出。 */
   header > button { flex: 0 0 auto; white-space: nowrap; }
   /* select 的 min-width 默认按最长 option 文本算、不可压缩 —— 挤压量必须由
-     它们吸收。放开 min-width（保个 64px 下限）让空间/模型/模式三个下拉可缩。 */
+     它们吸收。放开 min-width（保个 64px 下限）让空间/模型两个下拉可缩。 */
   header > select { min-width: 64px; flex: 0 1 auto; }
-  /* 空间 / 模式两个下拉是浏览器 UA 默认样式：白底黑字方块，压在浅灰 header 上
-     特别跳。统一成灰底灰字，跟旁边 MCP / 模型管理 / agent 日志 几个按钮一个调子
-     ——全用主题变量，亮暗双主题自适应。模型下拉（#model-select）不在此列，它是
-     「当前模型」的主控件，保留原来的高对比度。 */
-  #space-select, #mode-select {
+  /* 空间下拉是浏览器 UA 默认样式：白底黑字方块，压在浅灰 header 上特别跳。
+     改成灰底灰字，跟旁边 MCP / 模型管理 / agent 日志 几个按钮一个调子
+     ——全用主题变量，亮暗双主题自适应。模型下拉（#model-select）不在此列，
+     它是「当前模型」的主控件，保留原来的高对比度。 */
+  #space-select {
     background: var(--bg-soft); color: var(--text-dim);
     border: 1px solid var(--border); border-radius: 6px;
     padding: 3px 6px; font-size: 12px; font-family: inherit;
@@ -591,6 +590,22 @@
   }
   #composer-row {
     display: flex; gap: 8px; align-items: flex-end;
+  }
+  /* 模式三档：一排 pill，当前档反色高亮。贴着输入框放（欢迎页和对话页各一份
+     容器，见 renderModes）—— 模式说的是"这一轮怎么干"，放在手边比收进 header
+     合适：header 已经排了标题 / 状态 / 空间 / +空间 / 模型 / 齿轮六个东西，
+     窄窗口下再塞一个必然挤爆。 */
+  .mode-switch { display: flex; gap: 4px; align-items: center; }
+  .mode-switch:empty { display: none; }
+  .mode-switch button {
+    font-family: inherit; font-size: 12px; line-height: 1.2;
+    padding: 4px 10px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text-dim);
+  }
+  .mode-switch button:hover { border-color: var(--accent); color: var(--accent); }
+  /* 激活 pill 用 text/bg 反色：不写死颜色，亮暗主题下都自动成立 */
+  .mode-switch button.active {
+    background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600;
   }
   /* 待发送图片条：空时不出现，不占一行 */
   #attach-strip { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -1034,7 +1049,6 @@
       <button id="space-new" title="新建空间（未指定目录则落在 ~/.agentd/spaces/ 下）">+空间</button>
       <select id="model-select" title="热切换模型（不重启 agentd，下一轮对话生效；当前会话保留）"></select>
       <span class="spacer"></span>
-      <select id="mode-select" title="会话模式（下一轮起生效）" style="display:none"></select>
       <button id="settings-btn" title="设置：MCP 配置 / 模型管理 / 个性化设置 / agent 日志 / 主题">⚙</button>
     </header>
 
@@ -1072,6 +1086,7 @@
       <div class="w-box">
         <textarea id="w-input" rows="2" placeholder="今天帮你做些什么？（Enter 发送，Shift+Enter 换行）"></textarea>
         <div id="w-attach-strip"></div>
+        <div id="w-mode-switch" class="mode-switch" role="group" aria-label="会话模式"></div>
         <div class="w-foot">
           <div class="w-meta">
             <span class="w-frag" id="w-space" title="当前空间">📁 …</span>
@@ -1109,6 +1124,12 @@
         <button id="send">发送</button>
         <button id="stop" disabled title="停止当前生成（中断后仍保留已生成的部分）">停止</button>
       </div>
+      <!-- 模式三档（Agent / Plan / Ask）：选项由 agentd 在 new/load 响应里声明
+           （availableModes），每次会话变化 bridge 推 modes 事件来刷新。
+           空列表 = 对接的是没实现模式声明的旧 agentd —— 整条隐藏，一切照旧。
+           两处容器（对话页 / 欢迎页）由同一个 renderModes 填充，切一处另一处
+           跟着变 —— 复制 DOM 但不复制逻辑。 -->
+      <div id="mode-switch" class="mode-switch" role="group" aria-label="会话模式"></div>
       <input id="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple hidden>
     </div>
     <div class="hint">Ctrl/Cmd + L 看日志　·　Ctrl/Cmd + Enter 发送　·　点左侧会话可续聊</div>
@@ -1321,7 +1342,13 @@
   var messages = document.getElementById("messages");
   var input = document.getElementById("input");
   var sendBtn = document.getElementById("send");
-  var modeSel = document.getElementById("mode-select");
+  // 模式切换控件有两个容器：对话页（#composer 里）和欢迎页（#welcome 底栏）。
+  // 二者由同一个 renderModes 填充、同一个 applyMode 同步高亮 —— 复制 DOM，
+  // 不复制逻辑，否则两处迟早漂移成"这边显示 Plan、那边显示 Agent"。
+  var modeSwitches = Array.prototype.slice
+    .call(document.querySelectorAll(".mode-switch"))
+    .filter(Boolean);
+  var currentMode = "agent";  // 三档里当前选中的那档（状态载体，见 renderModes）
   var stopBtn = document.getElementById("stop");
   var dot = document.getElementById("dot");
   var statusText = document.getElementById("status-text");
@@ -1858,21 +1885,49 @@
 
   // 模式切换器：agentd 在 new/load 响应里声明可用模式（availableModes），
   // 每次会话变化（start/new/resume）bridge 会推 modes 事件来刷新。
-  // 空列表 = 对接的是没实现模式声明的旧 agentd —— 隐藏下拉框，一切照旧。
+  // 空列表 = 对接的是没实现模式声明的旧 agentd —— 整条隐藏，一切照旧。
+  //
+  // 刻意做成一排可见的 pill 而不是下拉框：模式是"这一轮怎么干"的显式承诺，
+  // 收进一个 120px 的下拉里等于藏起来（上一版就是这样，于是才有人问
+  // "我这个请求怎么被当成 plan 了"）。
   function renderModes(ev) {
     var list = ev.available || [];
-    if (!list.length) { modeSel.style.display = "none"; return; }
-    modeSel.style.display = "";
-    modeSel.innerHTML = "";
-    list.forEach(function (m) {
-      var opt = document.createElement("option");
-      opt.value = m.id;
-      opt.textContent = m.name || m.id;
-      if (m.description) opt.title = m.description;
-      modeSel.appendChild(opt);
+    modeSwitches.forEach(function (box) {
+      box.innerHTML = "";
+      list.forEach(function (m) { box.appendChild(modeButton(m)); });
     });
-    modeSel.value = ev.current || "agent";
-    modeSel.disabled = false;
+    applyMode(ev.current || "agent");
+  }
+
+  function modeButton(m) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.mode = m.id;
+    btn.textContent = m.name || m.id;
+    if (m.description) btn.title = m.description;
+    btn.addEventListener("click", function () { selectMode(m.id); });
+    return btn;
+  }
+
+  // 只改高亮、不发请求。用于 renderModes 与后端推来的 mode 事件 —— 这两种情况
+  // 下模式已经是这个值了，再 POST 一次纯属多余（还会打断输入框焦点）。
+  function applyMode(id) {
+    currentMode = id;
+    modeSwitches.forEach(function (box) {
+      var kids = Array.prototype.slice.call(box.children);
+      for (var i = 0; i < kids.length; i++) {
+        kids[i].classList.toggle("active", kids[i].dataset.mode === id);
+      }
+    });
+  }
+
+  // 用户点了某一档：先高亮（点了要有反应），再同步给 agentd。
+  function selectMode(id) {
+    if (id === currentMode) return;
+    applyMode(id);
+    api("/api/mode", { method: "POST", body: { mode_id: id } })
+      .catch(function (e) { showErrorBubble("模式切换失败", String((e && e.message) || e)); })
+      .finally(function () { input.focus(); });
   }
 
   /* HIGHLIGHT-BEGIN
@@ -4322,13 +4377,6 @@
       btn.disabled = false;
     }
   });
-  modeSel.addEventListener("change", function () {
-    modeSel.disabled = true;
-    api("/api/mode", { method: "POST", body: { mode_id: modeSel.value } })
-      .catch(function (e) { showErrorBubble("模式切换失败", String((e && e.message) || e)); })
-      .finally(function () { modeSel.disabled = false; input.focus(); });
-  });
-
   // ---- 事件处理 ----
 
   function handle(ev) {
@@ -4343,8 +4391,8 @@
     }
 
     if (ev.type === "mode") {
-      // agentd 已把模式切到对应值；只同步下拉框选中项
-      if (modeSel) { modeSel.value = ev.mode_id; }
+      // agentd 已把模式切到对应值；只同步高亮，不再回发请求
+      applyMode(ev.mode_id);
       setStatus("ready", "模式已切为 " + ev.mode_id + "（下一轮生效）");
       return;
     }

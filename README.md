@@ -693,6 +693,16 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   后端接口：`GET /api/sessions`、`GET /api/session/<id>`、`POST /api/session/resume`、
   `POST /api/session/new`、`POST /api/session/hide`、`POST /api/session/rename`、
   `POST /api/mode`。
+- **模式三档：用户显式选，内核不猜** —— 输入框下方一排 pill：
+  **Agent**（默认，读写文件 / 跑命令全开）/ **Plan**（先列分步计划 → 确认后
+  逐步执行，步骤进度实时可见）/ **Ask**（只读：能读、能搜索、能抓网页，
+  但不会改动任何东西）。
+  选项来自 agentd 在 `session/new`、`session/load` 响应里声明的
+  `modes.availableModes`（内核注册了四种，界面只暴露这三档；`single` 是调试
+  档位，不给用户），切换后**下一轮**生效。
+  刻意**没有**关键词自动路由 —— 曾经"请求里出现『规划』就自动进 plan"把
+  "帮我规划一个 7 天的旅行"拆成 7 轮工具循环，一个完整答复被切碎；
+  加话题豁免也只是打地鼠。想分步执行就自己点 Plan。
   **会话重命名**：右键会话条目 →「重命名…」，写本地别名（`session_aliases.json`），
   列表标题别名优先；留空提交即恢复自动标题。
 - **空间（Space）：参考 WorkBuddy 的「空间」概念** —— 每个空间是一个**具名工作目录**，
