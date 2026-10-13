@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import threading
 from typing import Any
@@ -33,6 +34,7 @@ class Bridge:
         user       用户发出的消息（回声，让界面立刻有反馈）
         delta      流式增量，role ∈ assistant / thought / error / notice
         tool       工具调用状态变化（含 id/title/kind/status/output）
+        plan       计划快照（plan 模式；entries=[{content,priority,status}]，整份替换）
         permission agent 请求审批（带 id/tool/detail/options），界面必须回
         done       本轮结束，带 stop reason 和 error
     """
@@ -444,6 +446,7 @@ class Bridge:
         """
         last = {"assistant": 0, "thought": 0, "error": 0, "notice": 0}
         seen_tools: dict[str, tuple[str, str]] = {}
+        seen_plan: str = ""  # 计划快照的序列化形式，变了才发（同工具的差量思路）
         turn: Turn | None = None
         try:
             async for t in self._client.prompt(text, images=images):
@@ -457,6 +460,12 @@ class Bridge:
                     if len(value) > last[role]:
                         self._emit(type="delta", role=role, text=value[last[role]:])
                         last[role] = len(value)
+                # 计划（plan 模式）：快照序列化后比对，变了就整份发 —— 前端拿到
+                # 直接替换，条目状态（pending → in_progress → completed）实时可见。
+                plan_snap = json.dumps(t.plan, ensure_ascii=False, sort_keys=True)
+                if plan_snap != seen_plan:
+                    seen_plan = plan_snap
+                    self._emit(type="plan", entries=t.plan)
                 # 工具卡片：状态有变就发一条（同一个 call_id 会被前端就地更新）
                 for tool in t.tools:
                     snap = (tool.status, tool.output)

@@ -29,6 +29,17 @@ DEFAULT_DB_PATH = Path.home() / ".agentd" / "sessions.db"
 # 片的 output —— 画出来等于同一份内容显示两遍。（详见 get_history 的 docstring）
 _MODEL_ONLY_ROLES = frozenset({"tool", "system"})
 
+# 内部消息的 payload 标记（跨仓库契约，见 agentd/kernel/models.py 的
+# Message.internal）：plan 模式的计划原文（assistant）和每步的「【计划 i/N】…」
+# 指令（user）要进模型上下文、要落库，但不是给人看的。不过滤的后果
+# （2026-10-13 实测）：回放时画出 1 条"我的计划：…"大气泡 + N 条步骤提示
+# 用户气泡，侧栏预览也变成"【计划 5/7】制定每日详细行程计划…"—— 用户原话
+# "界面很乱"。SQL 侧（list_meta）用 json_extract 判同一个键，两边口径一致。
+_INTERNAL_KEY = "internal"
+# payload 里 internal 为真 = 内部消息。SQLite 的 json_extract 对缺键返回 NULL，
+# COALESCE 成 0（假）—— 旧库数据（没有这个键）一律按"非内部"处理。
+_INTERNAL_SQL = f"COALESCE(json_extract(payload,'$.{_INTERNAL_KEY}'),0)=0"
+
 
 def _content_display(c: str | None) -> str:
     """content 冗余列 → 展示文本。
@@ -157,13 +168,15 @@ class SessionsSource:
             return []
         try:
             rows = conn.execute(
-                """
+                f"""
                 SELECT s.id, s.created_at,
                        COUNT(m.seq) AS msg_count,
                        (SELECT content FROM messages
-                          WHERE session_id = s.id ORDER BY seq ASC LIMIT 1) AS first_msg,
+                          WHERE session_id = s.id AND {_INTERNAL_SQL}
+                          ORDER BY seq ASC LIMIT 1) AS first_msg,
                        (SELECT content FROM messages
-                          WHERE session_id = s.id ORDER BY seq DESC LIMIT 1) AS last_msg
+                          WHERE session_id = s.id AND {_INTERNAL_SQL}
+                          ORDER BY seq DESC LIMIT 1) AS last_msg
                 FROM sessions s
                 LEFT JOIN messages m ON m.session_id = s.id
                 GROUP BY s.id
@@ -206,7 +219,7 @@ class SessionsSource:
         title，卡片要完整重放就得把 payload 解开带出去 —— 前端按
         renderToolCard 渲染。解析失败当空卡片处理，一行坏数据不能拖垮整个回放。
 
-        另外两种**要跳过**的行：
+        另外三种**要跳过**的行：
 
         - ``assistant`` 且 payload.tool_calls 非空 —— "举手要调工具"那一行。
           它本身通常只有一句前言（甚至空串），紧接着的工具卡片已经把这次动作
@@ -214,8 +227,13 @@ class SessionsSource:
         - ``role="tool"`` —— 工具的真实返回值，同时是紧邻那张卡片的 output。
           这一行存在的意义是**让模型下一轮还能看到自己读过什么**（跨轮上下文），
           跟 UI 回放无关，画出来就把同一份输出显示了两遍。
+        - ``payload.internal`` 为真 —— plan 模式的内部消息（计划原文 assistant、
+          每步的「【计划 i/N】…」user 指令）。进上下文、落库，但不给人看；
+          2026-10-13 实测：不过滤时回放里混进 1 条计划大气泡 + N 条步骤提示
+          用户气泡，侧栏预览也变成步骤提示词（用户原话"界面很乱"）。
+          见模块顶部 _INTERNAL_KEY 的跨仓库契约说明。
 
-        两者都是给模型的、不是给人看的。
+        前两者都是给模型的、不是给人看的。
         """
         conn = _open(self.path)
         if conn is None:
@@ -248,13 +266,22 @@ class SessionsSource:
             if r in _MODEL_ONLY_ROLES:
                 # 给模型看的行（见 docstring）：UI 回放一律跳过
                 continue
+            # payload 解析一次，三处共用（内部标记 / 工具记录 / 工具举手）。
+            # 坏 JSON 按"没有附加信息"处理 —— 一行坏数据不能拖垮整个回放。
+            try:
+                payload = json.loads(p) if p else {}
+            except ValueError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            if payload.get(_INTERNAL_KEY):
+                # 内部消息（plan 模式的计划原文 / 步骤指令）：见模块顶部
+                # _INTERNAL_KEY 注释。落库是给模型续聊看的，回放跳过。
+                continue
             content = _content_display(c)
             item = {"role": r, "name": n, "content": content}
             if r == "tool_record":
-                try:
-                    item["tool_record"] = (json.loads(p) or {}).get("tool_record") or {}
-                except ValueError:
-                    item["tool_record"] = {}
+                item["tool_record"] = payload.get("tool_record") or {}
             elif r == "assistant" and _has_tool_calls(p):
                 # 工具卡已经代表了这次动作，别再画一个多半是空的气泡
                 continue

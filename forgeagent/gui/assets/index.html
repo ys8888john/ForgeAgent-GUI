@@ -650,6 +650,17 @@
   .md-table { border-collapse: collapse; margin: 6px 0; font-size: 13px; }
   .md-table th, .md-table td { border: 1px solid var(--border); padding: 3px 10px; text-align: left; }
   .md-table th { background: var(--bg-soft); }
+  /* markdown 图片（![alt](src)）：行程/攻略类答复"图文并茂"就靠它。
+     加载中的占位别塌成一米线：给个最小高度，src 换上来后自然撑开。 */
+  .md-img {
+    display: block; max-width: 100%; height: auto; margin: 6px 0;
+    border-radius: 8px; background: var(--bg-soft);
+  }
+  .md-img[data-src] { min-height: 64px; min-width: 120px; }
+  .md-img.md-img-fail {
+    min-height: 40px; max-width: 280px; padding: 10px 12px; font-size: 12px;
+    color: var(--text-dim); border: 1px dashed var(--border); border-radius: 8px;
+  }
   .token-str { color: var(--hl-str); }
   .token-com { color: var(--hl-com); font-style: italic; }
   .token-kw { color: var(--hl-kw); }
@@ -725,11 +736,11 @@
     font-size: 12px; padding: 3px 6px; max-width: 220px;
     border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
   }
-  #models-pane, #mcp-pane, #space-new-pane, #model-dlg {
+  #models-pane, #mcp-pane, #space-new-pane, #prefs-pane, #model-dlg {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35);
     z-index: 60; align-items: center; justify-content: center;
   }
-  #models-pane.open, #mcp-pane.open, #space-new-pane.open, #model-dlg.open { display: flex; }
+  #models-pane.open, #mcp-pane.open, #space-new-pane.open, #prefs-pane.open, #model-dlg.open { display: flex; }
   /* 模型编辑弹窗：比 models-pane 更靠前，否则会被父级遮罩盖住 */
   #model-dlg { z-index: 70; }
 
@@ -877,16 +888,53 @@
      一边宽一边窄，甚至溢出容器。 */
   .m-row-split { display: flex; gap: 8px; }
   .m-row-split input { min-width: 0; flex: 1 1 0; }
-  /* ---- 多媒体模型（默认图像识别 / 图像生成）---- */
-  .m-media {
+  /* ---- 多媒体模型（默认图像识别 / 图像生成）----
+     区块样式两种面板共用：以前内嵌在「模型配置」里，2026-10-13 挪到独立的
+     「个性化设置」弹窗（#prefs-pane），并改成按能力标签过滤的下拉框。 */
+  .m-media, .pf-media {
     border: 1px solid var(--border); border-radius: 8px;
     padding: 10px 12px; margin-top: 12px;
   }
   .m-media-title { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
-  .m-media .m-note-sub { margin-bottom: 8px; }
+  .m-media .m-note-sub, .pf-media .m-note-sub { margin-bottom: 8px; }
   .m-media-hint { font-size: 11px; color: var(--text-dim); align-self: center; }
   .m-media-hint.ok { color: var(--ok); }
   .m-media-hint.err { color: var(--danger); }
+  /* 个性化设置里的能力下拉：label 在左、下拉在右，一行一对 */
+  .pf-row { display: flex; align-items: center; gap: 10px; }
+  .pf-row label { flex: 0 0 auto; font-size: 12px; color: var(--text-dim); }
+  .pf-row select {
+    flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 6px 8px;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+    font-family: var(--mono);
+  }
+  .pf-goto { font-size: 11px; }
+
+  /* ---- 计划卡片（plan 模式）---- */
+  /* 一个回合一张卡：agentd 的 plan 通知带全量条目快照，整份替换渲染。
+     条目状态背后是内核真跑完一步（每步 = 一轮完整 agent 循环），不是动画。 */
+  .bubble.plan {
+    /* 计划卡贴右：它是回合级前言，跟在右侧更像"侧栏式进度"，
+       不和左侧的 assistant 正文/思考框抢视线。flex-end + 无 width
+       让它按内容收缩（最多 82%）而非拉伸成整块。 */
+    align-self: flex-end;
+    border: 1px solid var(--border);
+    background: var(--bg-soft);
+    padding: 10px 12px;
+  }
+  .plan-head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px;
+  }
+  .plan-count { font-weight: 400; color: var(--text-dim); }
+  .plan-list { display: flex; flex-direction: column; gap: 5px; }
+  .plan-item { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; line-height: 1.5; }
+  .plan-icon { flex: 0 0 14px; text-align: center; }
+  .plan-item.pending .plan-icon { color: var(--text-dim); }
+  .plan-item.in_progress .plan-icon { color: var(--accent); }
+  .plan-item.in_progress .plan-text { color: var(--text); font-weight: 500; }
+  .plan-item.completed .plan-icon { color: var(--ok); }
+  .plan-item.completed .plan-text { color: var(--text-dim); }
 
   /* ---- 会话右键菜单 ---- */
   #ctx-menu {
@@ -987,7 +1035,7 @@
       <select id="model-select" title="热切换模型（不重启 agentd，下一轮对话生效；当前会话保留）"></select>
       <span class="spacer"></span>
       <select id="mode-select" title="会话模式（下一轮起生效）" style="display:none"></select>
-      <button id="settings-btn" title="设置：MCP 配置 / 模型管理 / agent 日志 / 主题">⚙</button>
+      <button id="settings-btn" title="设置：MCP 配置 / 模型管理 / 个性化设置 / agent 日志 / 主题">⚙</button>
     </header>
 
     <!-- 设置菜单：点 ⚙ 弹出。MCP / 模型管理 / agent 日志 / 主题 四个入口收在这里，
@@ -998,6 +1046,9 @@
       </button>
       <button class="sm-item" id="sm-models" type="button">
         <span class="sm-icon">🧩</span><span class="sm-name">模型管理</span>
+      </button>
+      <button class="sm-item" id="sm-prefs" type="button">
+        <span class="sm-icon">🎛</span><span class="sm-name">个性化设置</span>
       </button>
       <button class="sm-item" id="sm-log" type="button">
         <span class="sm-icon">📜</span><span class="sm-name">agent 日志</span>
@@ -1098,17 +1149,6 @@
           一边静默溢出"。<b>留空 = 不改</b>（保持该配置原来的值），<b>填 0 = 不限</b>。
         </div>
         <div id="m-list"></div>
-        <div class="m-media" id="m-media">
-          <div class="m-media-title">多媒体模型</div>
-          <div class="m-note m-note-sub">
-            对话里「看懂图片 / 生成图片」用的默认模型，写进<b>当前激活配置</b>的环境变量
-            （key 和地址自动沿用该配置，不用重填）。保存即热生效，不用重启；聊天模型不受影响。
-            <b>清空并保存 = 关掉该能力。</b>
-          </div>
-          <div class="m-row"><input id="m-vision-model" placeholder="默认图像识别模型，如 glm-4.6v（看懂你发的图片）"></div>
-          <div class="m-row"><input id="m-image-model" placeholder="默认图像生成模型，如 glm-image（对话里直接说「帮我画一张…」就能出图）"></div>
-          <div class="m-actions"><button id="m-media-save" type="button">保存多媒体设置</button><span id="m-media-hint" class="m-media-hint"></span></div>
-        </div>
         <div class="m-edit" id="m-edit">
           <div class="m-row"><input id="m-name" placeholder="显示名，如：智谱 GLM-4.5-air"></div>
           <div class="m-row"><input id="m-backend" placeholder="AGENTD_LLM_BACKEND，如 zhipu"></div>
@@ -1139,6 +1179,41 @@
         <div class="m-actions m-foot">
           <button id="m-add">+ 新增</button>
           <button id="m-close">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 个性化设置：按能力给任务分派模型。2026-10-13 从「模型配置」里移出来单开
+         一面板 —— 放在模型管理里容易被当成"又一项模型参数"，而它其实是跨配置的
+         使用偏好（当前配置里哪些模型能看图、哪些能出图，直接列出来选，不用手打）。 -->
+    <div id="prefs-pane">
+      <div class="m-box">
+        <div class="m-title">个性化设置</div>
+        <div class="m-note">
+          按能力给任务分派模型：你发图片给模型<b>识别</b>走「图像处理」，对话里说
+          「帮我画一张…」<b>出图</b>走「图像生成」。两个下拉只列出<b>当前配置</b>里
+          标了对应能力标签的模型；接口地址和 key 自动沿用该配置，不用重填。
+          保存即热生效，不用重启 agentd，聊天模型不受影响。
+        </div>
+        <div class="pf-media" id="pf-media">
+          <div class="m-media-title">多媒体模型</div>
+          <div class="m-note m-note-sub" id="pf-active-note">当前配置：…</div>
+          <div class="m-row pf-row">
+            <label for="pf-vision-model">图像处理（看懂图片）</label>
+            <select id="pf-vision-model"></select>
+          </div>
+          <div class="m-row pf-row">
+            <label for="pf-image-model">图像生成（对话里出图）</label>
+            <select id="pf-image-model"></select>
+          </div>
+          <div class="m-note m-note-sub" id="pf-empty-note" style="display:none"></div>
+          <div class="m-actions">
+            <button id="pf-save" type="button">保存</button>
+            <span id="pf-hint" class="m-media-hint"></span>
+          </div>
+        </div>
+        <div class="m-actions m-foot">
+          <button id="pf-close">关闭</button>
         </div>
       </div>
     </div>
@@ -1344,6 +1419,7 @@
 
   // ---- 工具 ----
 
+  /* MD-BEGIN（纯函数，node 可测；别在这里碰 DOM）*/
   function escapeHtml(s) {
     return s.replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
@@ -1351,7 +1427,9 @@
   }
 
   // 极简 Markdown：够用、无依赖、离线可用。
-  // 顺序有讲究：先转义 HTML（防注入），再处理围栏代码块（内部不再做行内替换）。
+  // 顺序有讲究：先转义 HTML（防注入），再处理围栏代码块（内部不再做行内替换），
+  // 图片要在加粗/斜体之前抽走（URL 里可能有 * 之类），列表按行分组放在段落
+  // 拆分之前（列表是行级结构）。
   function renderMd(src) {
     var s = escapeHtml(src);
     var blocks = [];
@@ -1360,20 +1438,21 @@
       return "\u0000BLOCK" + (blocks.length - 1) + "\u0000";
     });
     s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    s = s.replace(/!\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g, function (m, alt, url) {
+      return mdImageTag(alt, url);
+    });
     s = s.replace(/^### (.*)$/gm, "<h3>$1</h3>");
     s = s.replace(/^## (.*)$/gm, "<h2>$1</h2>");
     s = s.replace(/^# (.*)$/gm, "<h1>$1</h1>");
     s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-    s = s.replace(/^\s*[-*+] +(.*)$/gm, "<li>$1</li>");
-    s = s.replace(/(<li>[\s\S]*?<\/li>)(?![\s\S]*?<li>)/g, function (m) {
-      return "<ul>" + m + "</ul>";
-    });
     s = renderTables(s);
+    s = groupLists(s);
     s = s.split(/\n{2,}/).map(function (chunk) {
       chunk = chunk.trim();
       if (!chunk) return "";
-      if (/^<(h[1-3]|ul|li|pre|table)/.test(chunk)) return chunk;
+      // img 不豁免：<p><img …></p> 是合法 HTML，豁免了反而丢图后文字的 <br>
+      if (/^<(h[1-3]|ul|ol|li|pre|table)/.test(chunk)) return chunk;
       return "<p>" + chunk.replace(/\n/g, "<br>") + "</p>";
     }).join("");
     s = s.replace(/\u0000BLOCK(\d+)\u0000/g, function (m, i) {
@@ -1388,8 +1467,85 @@
     return s;
   }
 
-  function atBottom() {
-    return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
+  // markdown 图片 → <img> 标签。alt / url 都是 escapeHtml 之后的文本，
+  // 直接当属性值是安全的（浏览器会解回实体）。
+  // 两类来源：
+  //   http(s) 直链：直接 src；
+  //   其它（本地路径，典型是 generate_image 落盘的产物）：挂 data-src 占位，
+  //   由 hydrateMdImages 走 /api/artifact_preview 拉字节换成 data: URL ——
+  //   与产物卡 attachThumb 同一条路（带 token 的 POST + 服务端路径白名单）。
+  // 刻意只放行 http(s)：data: / javascript: 之类一律按本地路径走白名单，
+  // 最坏情况只是"预览失败"，不会执行任何东西。
+  function mdImageTag(alt, url) {
+    var raw = url.replace(/&amp;/g, "&");
+    var safeAlt = alt || "图片";
+    if (/^https?:\/\//i.test(raw)) {
+      return '<img class="md-img" src="' + url + '" alt="' + safeAlt + '">';
+    }
+    return '<img class="md-img" data-src="' + url + '" alt="' + safeAlt + '">';
+  }
+
+  // 把 markdown 图片里的本地路径换成真图（renderMd 是同步的，换 src 只能在这儿）。
+  // 每次 renderMd 重画都会新建 img 节点，所以这里按 data-src 幂等：
+  // 成功后摘掉 data-src（不再重复拉），失败也摘掉 + 打 class（虚线占位），
+  // 同一路径在途只拉一次（流式期间 innerHTML 会重建很多次）。
+  var _mdImgBusy = {};
+  function hydrateMdImages(root) {
+    var imgs = (root || document).querySelectorAll("img.md-img[data-src]");
+    for (var i = 0; i < imgs.length; i++) {
+      (function (im) {
+        var p = im.getAttribute("data-src");
+        if (!p || _mdImgBusy[p]) return;
+        _mdImgBusy[p] = true;
+        api("/api/artifact_preview", { method: "POST", body: { path: p } }).then(function (r) {
+          _mdImgBusy[p] = false;
+          im.removeAttribute("data-src");
+          if (r && r.ok) {
+            im.src = "data:" + r.mime + ";base64," + r.b64;
+          } else {
+            im.classList.add("md-img-fail");
+            im.title = (r && r.error) || "预览不可用";
+          }
+        }).catch(function () {
+          _mdImgBusy[p] = false;
+          im.removeAttribute("data-src");
+          im.classList.add("md-img-fail");
+        });
+      })(imgs[i]);
+    }
+  }
+
+  // 列表分组：连续的列表行各自成组，有序和无序不混在一组。
+  // 有序标记：`1. ` `1) `（半角，后跟空格）或 `1、`（中文顿号，可无空格）——
+  // 中文模型两种都爱用。**不**认"3.14"这种：半角标记后必须跟空白，
+  // 顿号本身就是分隔、后面直接跟内容也行。全角 `）．` 一并收。
+  var OL_LINE_RX = /^\s*\d+\s*(?:[.)）．]\s+|、)\s*(.*)$/;
+  var UL_LINE_RX = /^\s*[-*+•]\s+(.*)$/;
+
+  function groupLists(s) {
+    var lines = s.split("\n");
+    var out = [];
+    var i = 0;
+    while (i < lines.length) {
+      var ol = OL_LINE_RX.exec(lines[i]);
+      var ul = ol ? null : UL_LINE_RX.exec(lines[i]);
+      if (!ol && !ul) {
+        out.push(lines[i]);
+        i++;
+        continue;
+      }
+      var ordered = !!ol;
+      var items = [];
+      while (i < lines.length) {
+        var m = ordered ? OL_LINE_RX.exec(lines[i]) : UL_LINE_RX.exec(lines[i]);
+        if (!m) break;
+        items.push(m[1]);
+        i++;
+      }
+      var tag = ordered ? "ol" : "ul";
+      out.push("<" + tag + "><li>" + items.join("</li><li>") + "</li></" + tag + ">");
+    }
+    return out.join("\n");
   }
 
   function splitTableRow(line) {
@@ -1429,6 +1585,11 @@
       i++;
     }
     return out.join("\n");
+  }
+  /* MD-END */
+
+  function atBottom() {
+    return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
   }
 
   function scrollToBottom() {
@@ -1788,6 +1949,7 @@
   function appendText(el, text) {
     el.dataset.raw += text;
     el._body.innerHTML = renderMd(el.dataset.raw);
+    hydrateMdImages(el._body);
     if (autoScroll) scrollToBottom();
   }
 
@@ -2005,6 +2167,53 @@
     // renderHistory 重放历史工具记录时也走 upsertTool，历史记录全是
     // completed —— 在这里发标签会给旧会话的结尾留下一颗永远在跳的
     // 「等待模型响应」（2026-10-09 复查发现的实锤 bug，顺手修掉）。
+    if (autoScroll) scrollToBottom();
+  }
+
+  // ---- 计划卡片（plan 模式）----
+  // bridge 的 plan 事件带全量条目快照 [{content, priority, status}]，整份替换渲染。
+  // 一个回合一张卡：首条 plan 事件建卡（此时正在等审批或刚开始执行），后续事件
+  // 就地更新条目状态。状态图标背后是内核真跑完一步（每步 = 一轮完整 agent
+  // 循环），不是计时器动画。
+  var PLAN_ICONS = { pending: "○", in_progress: "▶", completed: "✓" };
+  var planCard = null;
+
+  function upsertPlan(ev) {
+    var entries = ev.entries || [];
+    if (!planCard) {
+      planCard = document.createElement("div");
+      planCard.className = "bubble plan";
+      var head = document.createElement("div");
+      head.className = "plan-head";
+      var title = document.createElement("span");
+      title.textContent = "执行计划";
+      var count = document.createElement("span");
+      count.className = "plan-count";
+      head.appendChild(title); head.appendChild(count);
+      var list = document.createElement("div");
+      list.className = "plan-list";
+      planCard.appendChild(head); planCard.appendChild(list);
+      planCard._list = list; planCard._count = count;
+      // 直接挂进消息流（不进工具组）：计划是回合级的前言，不是某一次工具调用
+      messages.appendChild(planCard);
+    }
+    var done = 0;
+    planCard._list.innerHTML = "";
+    entries.forEach(function (e) {
+      var st = e.status || "pending";
+      if (st === "completed") done++;
+      var row = document.createElement("div");
+      row.className = "plan-item " + st;
+      var icon = document.createElement("span");
+      icon.className = "plan-icon";
+      icon.textContent = PLAN_ICONS[st] || "○";
+      var text = document.createElement("span");
+      text.className = "plan-text";
+      text.textContent = e.content || "";
+      row.appendChild(icon); row.appendChild(text);
+      planCard._list.appendChild(row);
+    });
+    planCard._count.textContent = entries.length ? done + "/" + entries.length : "";
     if (autoScroll) scrollToBottom();
   }
 
@@ -2240,12 +2449,14 @@
       t.classList.add("collapsed");
       t.dataset.raw = text || "";
       t._body.innerHTML = renderMd(t.dataset.raw);
+      hydrateMdImages(t._body);
       messages.appendChild(t);
       return;
     }
     var el = document.createElement("div");
     el.className = "bubble " + (role === "user" ? "user" : "assistant");
     el.innerHTML = renderMd(text || "");
+    hydrateMdImages(el);
     messages.appendChild(el);
   }
 
@@ -2869,8 +3080,8 @@
     return { text: full, full: full };
   }
 
-  // 返回 promise：保存多媒体设置后要等它渲完再写提示，否则提示会被
-  // renderMediaSection 的 hint 复位清掉（实测：保存成功但界面上什么都没闪）。
+  // 返回 promise：调用方（如「个性化设置」保存后）要等它渲完再写提示，
+  // 否则提示会被渲染的整体重建清掉（实测：保存成功但界面上什么都没闪）。
   function renderModelList() {
     return api("/api/models").then(function (res) {
       mList.innerHTML = "";
@@ -2885,39 +3096,124 @@
         empty.textContent = "还没有配置。点「+ 新增」建一个（比如智谱 / MiMo / Ollama）。";
         mList.appendChild(empty);
       }
-      renderMediaSection(profiles, active);
     }).catch(function () {});
   }
 
-  // ---- 多媒体模型：默认图像识别 / 图像生成（写进当前激活配置的 env）----
-  // 注意回填口径：MODEL / BASE_URL 不脱敏可以直接回填；*_API_KEY 会被服务端
-  // 脱敏成 "abc…xyz"，绝不能回填输入框（这里也不需要 —— 派生在服务端做）。
-  function renderMediaSection(profiles, active) {
-    var box = document.getElementById("m-media");
-    if (!box) return;
-    var p = null;
-    profiles.forEach(function (x) { if (x.id === active) p = x; });
-    if (!p) {
-      box.style.display = "none";
-      return;
-    }
-    box.style.display = "";
-    var env = p.env || {};
-    document.getElementById("m-vision-model").value = env["AGENTD_VISION_MODEL"] || "";
-    document.getElementById("m-image-model").value = env["AGENTD_IMAGE_MODEL"] || "";
-    var hint = document.getElementById("m-media-hint");
+  // ---- 个性化设置：按能力分派模型（默认图像识别 / 图像生成）----
+  // 2026-10-13 从「模型配置」里移出来单开面板。存储口径没变：仍写进**当前激活
+  // profile** 的 env（AGENTD_VISION_* / AGENTD_IMAGE_*），BASE_URL / API_KEY
+  // 由服务端从该配置的主凭据派生 —— 回填只看 MODEL（不脱敏），派生在服务端做。
+
+  /* PREFS-BEGIN（纯函数，node 可测；别在这里碰 DOM）*/
+  // entries = profile.models（[{id, caps}]，也兼容老的纯字符串数组）；
+  // capsOf(id) 由调用方传入名字启发式兜底（index.html 里的 modelCaps）。
+  // 显式标签优先：caps 非空就按它判，空数组才回落启发式 —— 与列表里徽章
+  // （modelCapsOf）同一套口径， dropdown 里看到的和徽章上贴的永远一致。
+  function capableModelIds(entries, cap, capsOf) {
+    var out = [];
+    (entries || []).forEach(function (m) {
+      var id = (m && typeof m === "object") ? String(m.id || "").trim() : String(m || "").trim();
+      if (!id) return;
+      var explicit = (m && typeof m === "object" && Array.isArray(m.caps)) ? m.caps : [];
+      var caps = explicit.length ? explicit : capsOf(id);
+      if (caps.indexOf(cap) >= 0 && out.indexOf(id) < 0) out.push(id);
+    });
+    return out;
+  }
+  /* PREFS-END */
+
+  var prefsPane = document.getElementById("prefs-pane");
+
+  function openPrefsPane() {
+    prefsPane.classList.add("open");
+    renderPrefsPane();
+  }
+  function closePrefsPane() {
+    prefsPane.classList.remove("open");
+  }
+  document.getElementById("pf-close").addEventListener("click", closePrefsPane);
+  prefsPane.addEventListener("click", function (e) {
+    if (e.target === prefsPane) closePrefsPane();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && prefsPane.classList.contains("open")) closePrefsPane();
+  });
+
+  // 填两个下拉：只列当前配置里有对应能力的模型。已存的值不在清单里（模型被删 /
+  // 换了配置）时也作为一个选项带上并选中 —— 让用户看见当前真实设置，而不是
+  // 莫名其妙显示成"未设置"、一保存把旧值清掉。
+  function renderPrefsPane() {
+    var hint = document.getElementById("pf-hint");
     hint.textContent = ""; hint.className = "m-media-hint";
+    api("/api/models").then(function (res) {
+      var profiles = res.profiles || [];
+      var active = res.active;
+      var p = null;
+      profiles.forEach(function (x) { if (x.id === active) p = x; });
+      var note = document.getElementById("pf-active-note");
+      var empty = document.getElementById("pf-empty-note");
+      var visSel = document.getElementById("pf-vision-model");
+      var imgSel = document.getElementById("pf-image-model");
+      var saveBtn = document.getElementById("pf-save");
+      visSel.innerHTML = ""; imgSel.innerHTML = "";
+      empty.style.display = "none";
+      if (!p) {
+        note.textContent = "当前配置：（无 —— 先去模型管理里选一个配置）";
+        empty.textContent = "没有激活的模型配置，保存会失败。";
+        empty.style.display = "";
+        saveBtn.disabled = true;
+        return;
+      }
+      saveBtn.disabled = false;
+      note.textContent = "当前配置：" + (p.name || p.id) + "（换配置去顶部下拉，设置随配置各存一份）";
+      var entries = modelEntriesOf(p.models);
+      var env = p.env || {};
+      fillCapSelect(visSel, entries, "图像识别", env["AGENTD_VISION_MODEL"] || "");
+      fillCapSelect(imgSel, entries, "图像生成", env["AGENTD_IMAGE_MODEL"] || "");
+      // 某一能力一个模型都没有时给可操作的提示（去模型管理补标签），而不是
+      // 让用户对着只有"未设置"一项的下拉发呆。
+      var visN = capableModelIds(entries, "图像识别", modelCaps).length;
+      var imgN = capableModelIds(entries, "图像生成", modelCaps).length;
+      if (!visN || !imgN) {
+        empty.textContent = (!visN ? "「图像识别」" : "") + (!visN && !imgN ? "、" : "") +
+          (!imgN ? "「图像生成」" : "") + "：当前配置里没有标这个能力的模型 —— " +
+          "去模型管理给对应模型勾上能力标签，回来这里就能选。";
+        empty.style.display = "";
+      }
+    }).catch(function () {});
   }
 
-  function saveMediaSection() {
-    var hint = document.getElementById("m-media-hint");
-    var btn = document.getElementById("m-media-save");
+  // 填一个能力下拉：未设置（空串）+ 有能力的模型 + 已存但不在清单里的值。
+  function fillCapSelect(sel, entries, cap, current) {
+    var none = document.createElement("option");
+    none.value = ""; none.textContent = "未设置（关闭该能力）";
+    sel.appendChild(none);
+    capableModelIds(entries, cap, modelCaps).forEach(function (id) {
+      var o = document.createElement("option");
+      o.value = id; o.textContent = id;
+      sel.appendChild(o);
+    });
+    if (current) {
+      var known = Array.prototype.some.call(sel.options, function (o) { return o.value === current; });
+      if (!known) {
+        var stale = document.createElement("option");
+        stale.value = current;
+        stale.textContent = current + "（已保存，但不在当前配置的模型清单里）";
+        sel.appendChild(stale);
+      }
+      sel.value = current;
+    }
+  }
+
+  function savePrefsPane() {
+    var hint = document.getElementById("pf-hint");
+    var btn = document.getElementById("pf-save");
     btn.disabled = true;
     api("/api/model/media", {
       method: "POST",
       body: {
-        vision_model: document.getElementById("m-vision-model").value.trim(),
-        image_model: document.getElementById("m-image-model").value.trim()
+        vision_model: document.getElementById("pf-vision-model").value,
+        image_model: document.getElementById("pf-image-model").value
       }
     }).then(function (r) {
       btn.disabled = false;
@@ -2926,18 +3222,18 @@
         hint.className = "m-media-hint err";
         return;
       }
-      // 先重算列表（它会把 hint 复位成空串），**再**写成功提示 —— 顺序反了
+      // 先重渲（它会把 hint 复位成空串），**再**写成功提示 —— 顺序反了
       // 用户就完全看不到反馈，只会怀疑自己那一下是不是没点上。
-      renderModelList().then(function () {
-        hint.textContent = "已保存并热生效";
-        hint.className = "m-media-hint ok";
-      });
+      renderPrefsPane();
+      hint.textContent = "已保存并热生效";
+      hint.className = "m-media-hint ok";
     }).catch(function (e) {
       btn.disabled = false;
       hint.textContent = "保存失败：" + String((e && e.message) || e);
       hint.className = "m-media-hint err";
     });
   }
+  document.getElementById("pf-save").addEventListener("click", savePrefsPane);
 
   // 一级：provider 行；二级：它名下的模型行。点一级行空白处折叠，点二级行热切换。
   function buildProviderGroup(p, active) {
@@ -3013,7 +3309,7 @@
         // 纯图像生成模型（glm-image / cogview-3-plus…）：切过去当聊天模型必然报错，
         // 所以这一行不给点击，直接把正确用法写在 title 上。
         row.classList.add("gen-only");
-        row.title = "这是图像生成模型，不能当聊天模型用；请到下面的「多媒体模型」里把它设为默认图像生成模型";
+        row.title = "这是图像生成模型，不能当聊天模型用；请到「设置 → 个性化设置」里把它设为默认图像生成模型";
       } else {
         row.title = "点一下切到这个模型（热切换，不重启 agentd）";
         row.addEventListener("click", function () { switchProfileModel(p, m); });
@@ -3133,8 +3429,6 @@
       out.textContent = String(e);
     }).then(function () { btn.disabled = false; });
   });
-
-  document.getElementById("m-media-save").addEventListener("click", saveMediaSection);
 
   document.getElementById("m-save").addEventListener("click", function () {
     var profile = profileFromForm();
@@ -4074,6 +4368,7 @@
       if (ev.images && ev.images.length) renderUserImages(b, ev.images);
       if (autoScroll) scrollToBottom();
       toolCards = {};  // 新一轮，卡片表清空（id 理论上不冲突，防御性重置）
+      planCard = null;  // 上一轮的计划卡不带到新回合（DOM 里旧的留着，只放引用）
       // 新一轮：本轮归组状态复位，下一轮的工具调用不会再缝进上一轮的标签
       currentToolGroup = null;
       currentRoundFirstCard = null;
@@ -4131,6 +4426,14 @@
         showPending("正在执行 " + (ev.title || "工具") + "…");
       }
       report();
+      return;
+    }
+
+    if (ev.type === "plan") {
+      // 计划快照（plan 模式）：整份替换渲染成计划卡。此刻通常在等审批
+      // （permission 事件会把标签改成"等待你审批"）或刚开始逐步执行。
+      upsertPlan(ev);
+      showPending("正在执行计划…");
       return;
     }
 
@@ -4497,6 +4800,10 @@
   document.getElementById("sm-models").addEventListener("click", function () {
     closeSettings();
     openModels();
+  });
+  document.getElementById("sm-prefs").addEventListener("click", function () {
+    closeSettings();
+    openPrefsPane();
   });
   document.getElementById("sm-log").addEventListener("click", function () {
     closeSettings();

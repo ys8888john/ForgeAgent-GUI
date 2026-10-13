@@ -456,19 +456,23 @@ read/search/edit、允许时文件真的落盘 / 拒绝时文件绝不存在、�
 `generate_image` 是 agentd 的原生工具，`kind=other`、**不弹审批**（默认 `native`
 策略下 `needs_approval` 对非写非执行类返回 False）。端到端脚本会断言全程 0 次审批。
 
-### 多媒体模型设置
+### 多媒体模型设置（个性化设置）
 
 主模型不一定是全能的：本机 qwen3.5 看不了图，`glm-4.5-air` 画不了图。与其逼用户换
-主模型，不如在「模型管理」里给这两件事各指定一个**专用子模型** —— 和 agentd 的
-视觉转译层同一套思路：
+主模型，不如给这两件事各指定一个**专用子模型** —— 和 agentd 的视觉转译层同一套思路：
 
-> 模型管理 → **多媒体模型** → 默认的图像处理模型 / 默认的图像生成模型 → 保存
+> 设置（⚙）→ **个性化设置** → 多媒体模型 → 默认的图像处理模型 / 默认的图像生成模型 → 保存
 
-填的只是**模型名**（如 `glm-4.6v` / `glm-image`）。端点与密钥**不让你再填一遍**：
+两个下拉**只列出当前配置里标了对应能力标签的模型**（图像处理 ← 「图像识别」，
+图像生成 ← 「图像生成」；显式标签优先，没标过才按名字猜，与列表徽章同一套口径），
+直接选，不用手打模型名。端点与密钥**不让你再填一遍**：
 后端从当前 profile 自己的 `AGENTD_OPENAI_*` / `AGENTD_ZHIPU_*` / `AGENTD_MIMO_*`
 推导出 `AGENTD_{VISION,IMAGE}_BASE_URL` 与 `_API_KEY` 一起写进该 profile 的
 `env`（Ollama profile 则推 `AGENTD_OLLAMA_HOST`，并且图像端点补 `/v1`）。保存后
 立刻重写 `hotenv.json`，**下一轮对话生效，不用重启 agentd**。
+
+> 2026-10-13 从「模型配置」弹窗里移出来单开面板：放在模型管理里容易被当成"又一项
+> 模型参数"，而它其实是跨配置的使用偏好；改成下拉后也不会再打错模型名。
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
@@ -484,7 +488,7 @@ read/search/edit、允许时文件真的落盘 / 拒绝时文件绝不存在、�
 
 没配时是什么表现：视觉那边是"功能关"，图片块原样发给主模型（和没有这一层完全
 一致）；图像生成那边工具还在，但一调就回一句**可行动的**报错——"未配置图像生成
-模型，请到模型管理 → 多媒体模型设置里填一个（或设 AGENTD_IMAGE_MODEL）"，
+模型，请到设置 → 个性化设置里选一个（或设 AGENTD_IMAGE_MODEL）"，
 而不是半路静默失败。
 
 ### 模型能力标签
@@ -520,7 +524,7 @@ read/search/edit、允许时文件真的落盘 / 拒绝时文件绝不存在、�
 （caps 留空 = 走启发式），`normalize_models()` 过滤白名单外的标签、按 id 去重。
 
 纯图像生成模型（不带「文字」标签的）**不可点击切换**：把它切过去当聊天模型必然报错，
-所以这一行不给点击，title 直接告诉你正确用法（去「多媒体模型」里设为默认图像生成
+所以这一行不给点击，title 直接告诉你正确用法（去「设置 → 个性化设置」里设为默认图像生成
 模型）。标签就长在它该在的地方，但门禁不让用户踩坑。
 
 ### 三跳验证
@@ -583,6 +587,8 @@ tests/
   test_gui_bridge.py   桥接层单测（注入假 client，无需图形环境）
   test_gui_server.py   本机 UI 服务单测：真起 HTTP 服务，真发请求
   test_gui_media_settings.py  多媒体模型设置单测：写进激活 profile / 端点密钥推导 / 热切换 / 清空语义
+  test_gui_prefs_pane.py      个性化设置面板单测：静态守卫（面板在、模型配置里已移出）+ node 跑 capableModelIds 能力过滤
+  test_gui_plan.py            plan 模式 GUI 侧单测：reducer 全量快照折叠 / 条目 content 不漏进正文 / bridge 差量发事件 / 计划卡静态守卫
   test_gui_models.py   模型配置单测：白名单 / merge 语义 / 热切换 / 模型能力标签（{id, caps} 新旧格式迁移、白名单过滤、HTTP 往返）
   test_gui_artifact_preview.py  产物图片预览单测：MIME 推导 / 非图片拒绝 / 白名单外拒绝 / 超大拒绝 / 必须 401
   test_gui_mcp_config.py  mcp.json 解析单测（含"必填字段不能省"的回归）
@@ -702,10 +708,20 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   - 命令行 `forgeagent-gui --cwd /path/to/project` 等价于「打开名为 project 的空间」：
     启动时把该目录落地成一个空间并激活；不传 `--cwd` 则走上面的默认空间系统。
   - 后端接口：`GET /api/spaces`、`POST /api/space/new`、`POST /api/space/switch`。
-- **会话模式切换**：顶栏模式下拉（agent ↔ single），经 `session/set_mode`
-  生效（下一轮 prompt 起新语义，agentd 响应里声明的取值为准）。agentd 未
-  声明 modes（旧版本）时下拉框自动隐藏。agentd 切换后会广播
-  `current_mode_update`，状态栏随之同步。
+- **会话模式切换**：顶栏模式下拉（agent / plan / single，取值为 agentd 声明），
+  经 `session/set_mode` 生效（下一轮 prompt 起新语义）。agentd 未声明 modes
+  （旧版本）时下拉框自动隐藏。agentd 切换后会广播 `current_mode_update`，
+  状态栏随之同步。
+- **计划模式（plan）**：选 plan 后发一句话，agentd 先产出分步计划 → 界面弹出
+  审批框（允许一次 / 本会话总是允许 / 拒绝）→ 允许后逐步执行。**规划类请求
+  自动走计划流程**：停在默认 agent 模式时，请求命中规划意图（"帮我规划…"、
+  "制定计划"、"安排行程"…）本轮自动按 plan 执行并发提示；显式选过 single/plan
+  的不插手，会话存储模式不变（追问不会被反复拖去审批）。计划渲染成一张
+  **计划卡**（一个回合一张，条目带 ○ 等待 / ▶ 进行中 / ✓ 完成状态图标和
+  `已完成/总数` 进度）：条目状态背后是内核真跑完一步（每步 = 一轮完整 agent
+  循环），不是动画。协议走 ACP 原生的 plan 通知（`session/update` 的
+  `AgentPlanUpdate`），reducer 折成 `Turn.plan` 全量快照，bridge 差量推给页面。
+  自动路由的总开关在 agentd 侧：`AGENTD_PLAN_AUTOROUTE=0`。
 - **MCP 管理弹窗**：顶栏「MCP」按钮直接打开 `mcp.json` 原文编辑
   （对齐 Claude Desktop 的"打开配置文件"体验，不把各家 server 的私有字段
   压进表单）。保存时校验 JSON/顶层形状，写回后自动重启 agentd（会话与

@@ -73,10 +73,11 @@ def test_user_message_chunk_is_not_echoed():
 
 
 def test_unknown_kind_is_recorded_not_lost():
-    # plan 这类内核还没产出的事件，先记下来，别静默吞掉
+    # 内核还没产出的事件类型（plan 已经实现了，见 test_gui_plan.py），先记下来，
+    # 别静默吞掉
     client, turn = AcpClient(), Turn()
-    client._apply_update(turn, _notify("plan", "步骤"))
-    assert turn.unknown == ["plan"]
+    client._apply_update(turn, _notify("some_future_kind", "将来的事件"))
+    assert turn.unknown == ["some_future_kind"]
 
 
 # ---- 工具调用：折叠进 Turn.tools ----

@@ -167,6 +167,10 @@ class Turn:
     unknown: list[str] = field(default_factory=list)  # 未识别的事件类型，调试用
     tools: list[ToolCallState] = field(default_factory=list)  # 本轮的工具调用（按出现顺序）
     tool_map: dict[str, ToolCallState] = field(default_factory=dict)  # call_id -> 状态
+    # 计划（plan 模式）：[{content, priority, status}]，status ∈ pending/in_progress/completed。
+    # **全量快照语义**：每个 plan 通知直接整体替换，客户端不做增量合并 —— 合并的
+    # 逻辑留在服务端（内核每次发的就是完整状态），这里越简单越不会错。
+    plan: list[dict] = field(default_factory=list)
 
     @property
     def running(self) -> bool:
@@ -817,6 +821,12 @@ class AcpClient:
             self._apply_tool(turn, update)
             return
 
+        # 计划（plan 模式）：全量快照替换。必须放在 _collect_text 之前 ——
+        # 条目 content 会被它当成"文本 chunk"收走，计划就永远看不到。
+        if kind == "plan":
+            self._apply_plan(turn, update)
+            return
+
         if kind == "current_mode_update":
             # agentd 在 set_session_mode 后广播的标准通知：把本会话的"当前模式"
             # 同步进 client 状态（下拉框选中项由 UI 依据它刷新，见 bridge）。
@@ -878,3 +888,29 @@ class AcpClient:
         # 协议层没有 cancelled 这个状态，只能靠输出文案区分。
         if state.status == "failed" and DENY_MARK in state.output:
             state.status = "cancelled"
+
+    def _apply_plan(self, turn: Turn, update: dict) -> None:
+        """把 plan 通知（ACP 的 AgentPlanUpdate）折叠成 Turn.plan 全量快照。
+
+        条目形状与服务端一致（content / priority / status），status 取值
+        pending / in_progress / completed —— 原样透传，不在这里做白名单：
+        协议加新状态时不该让界面瞎。空 content 的条目丢掉（那是垃圾数据）。
+        """
+        entries = update.get("entries")
+        if not isinstance(entries, list):
+            return
+        out: list[dict] = []
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            content = str(e.get("content") or "").strip()
+            if not content:
+                continue
+            out.append(
+                {
+                    "content": content,
+                    "priority": str(e.get("priority") or "medium"),
+                    "status": str(e.get("status") or "pending"),
+                }
+            )
+        turn.plan = out

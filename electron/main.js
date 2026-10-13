@@ -34,6 +34,10 @@ if (process.env.FORGEAGENT_CDP_PORT) {
 // exit 1）。强制软件渲染绕开 GPU —— 和 UI harness 里 --disable-gpu 同款，已验证
 // 渲染/截图稳定。普通机器上这一行只是牺牲一点流畅度，无副作用，放心留着。
 app.commandLine.appendSwitch("disable-gpu");
+// 同样因本机 sandbox 进程会崩（与上面同根），UI harness 脚本都额外加了 --no-sandbox
+// 才稳住。GUI 主程序之前只 disable-gpu 没加这条，导致 Electron 渲染进程间歇崩、
+// 窗口消失。补上与测试脚本一致的开关，让正式 GUI 也稳定。
+app.commandLine.appendSwitch("no-sandbox");
 // 允许 CDP 从本机任意 origin 接入（远程调试用）。只要开了 remote-debugging-port
 // 就需要这一条，否则浏览器/脚本握手会被 403 拒掉。
 app.commandLine.appendSwitch("remote-allow-origins", "*");

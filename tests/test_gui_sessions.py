@@ -33,6 +33,9 @@ CREATE TABLE messages (
 def _seed(db, rows: list[tuple[str, str, str]]) -> None:
     conn = sqlite3.connect(db)
     conn.executescript(_SCHEMA)
+    # 消息所属的会话行也要有：list_meta 走 sessions LEFT JOIN messages，
+    # 没有 sessions 行整个会话在侧栏里不存在（get_history 只查 messages，不受影响）。
+    conn.execute("INSERT OR IGNORE INTO sessions (id, created_at) VALUES ('s1', 0)")
     for role, content, payload in rows:
         conn.execute(
             "INSERT INTO messages (session_id, role, content, name, payload, created_at)"
@@ -148,6 +151,62 @@ def test_missing_empty_session_returns_none(tmp_path):
     conn.close()
 
     assert SessionsSource(db).get_history("s_nope") is None
+
+
+def test_internal_plan_messages_are_filtered(tmp_path):
+    """plan 模式的内部消息不进 UI：回放跳过，侧栏标题/预览也跳过。
+
+    复现 2026-10-13 用户实测"界面很乱"：一轮 plan 跑完，历史里混进
+    1 条"我的计划：…"（assistant）和 N 条"【计划 i/N】…只完成这一步…"
+    （user），GUI 回放时全画成普通气泡，侧栏预览变成步骤提示词。
+    跨仓库契约：agentd 在 payload.internal 打标（models.Message.internal）。
+    """
+    db = tmp_path / "sessions.db"
+    internal_plan = json.dumps(
+        {"role": "assistant", "content": "我的计划：\n1. 查路线\n2. 订酒店", "internal": True}
+    )
+    internal_step = json.dumps(
+        {
+            "role": "user",
+            "content": "【计划 1/2】查路线\n只完成这一步，不要提前做后面的步骤。",
+            "internal": True,
+        }
+    )
+    _seed(
+        db,
+        [
+            ("user", "帮我规划一个7天的新疆旅行", json.dumps({"role": "user", "content": "帮我规划一个7天的新疆旅行"})),
+            ("assistant", "我的计划：\n1. 查路线\n2. 订酒店", internal_plan),
+            ("user", "【计划 1/2】查路线\n只完成这一步，不要提前做后面的步骤。", internal_step),
+            ("assistant", "北疆环线：D1 乌鲁木齐…", json.dumps({"role": "assistant", "content": "北疆环线：D1 乌鲁木齐…"})),
+        ],
+    )
+
+    src = SessionsSource(db)
+    hist = src.get_history("s1")
+    # 只剩真实对话：用户请求 + 每步的真实答复；计划原文和步骤指令被过滤
+    assert [m["role"] for m in hist] == ["user", "assistant"]
+    assert hist[0]["content"] == "帮我规划一个7天的新疆旅行"
+    assert hist[1]["content"] == "北疆环线：D1 乌鲁木齐…"
+
+    meta = {m["id"]: m for m in src.list_meta()}["s1"]
+    assert meta["title"] == "帮我规划一个7天的新疆旅行"   # 首条（用户请求，非内部）
+    assert meta["preview"] == "北疆环线：D1 乌鲁木齐…"    # 末条非内部消息，不是步骤提示
+
+
+def test_internal_false_is_not_filtered(tmp_path):
+    """internal=False / 缺键（旧库数据）都按普通消息处理 —— 过滤只认 True。"""
+    db = tmp_path / "sessions.db"
+    _seed(
+        db,
+        [
+            ("user", "你好", json.dumps({"role": "user", "content": "你好", "internal": False})),
+            ("assistant", "你好！", json.dumps({"role": "assistant", "content": "你好！"})),
+        ],
+    )
+
+    hist = SessionsSource(db).get_history("s1")
+    assert [m["role"] for m in hist] == ["user", "assistant"]
 
 
 def test_hide_persists_and_filters_list_meta(tmp_path):
