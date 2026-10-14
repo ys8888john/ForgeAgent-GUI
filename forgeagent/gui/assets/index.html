@@ -2235,6 +2235,9 @@
 
   function upsertPlan(ev) {
     var entries = ev.entries || [];
+    // 空计划不建卡：bridge 理论上已拦掉空事件（2026-10-14 修），这里兜底防
+    // 旧版本事件/手搓消息 —— 否则每回合都会多一张只有标题的「执行计划」空卡。
+    if (!entries.length) return;
     if (!planCard) {
       planCard = document.createElement("div");
       planCard.className = "bubble plan";

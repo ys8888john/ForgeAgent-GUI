@@ -299,6 +299,11 @@ class _FakeStdin:
 
 
 class _FakeProc:
+    # returncode 必须给：_read_stdout 的 finally 靠它判断 agentd 死没死
+    # （cancel 时 return 也会走 finally）。缺了它 AttributeError 会把整个
+    # 清理逻辑（失败 pending、结掉待审批）跳过，测试就少了真保真度。
+    returncode = None
+
     def __init__(self, stdout=None) -> None:
         self.stdin = _FakeStdin()
         self.stdout = stdout
@@ -541,3 +546,246 @@ def test_current_mode_update_syncs_client_state():
     )
     assert client.current_mode == "single"
     assert turn.text == "" and turn.thought == ""   # 不污染正文/思考
+
+
+# ---- prompt 超时：不是简单报错，要停掉 agentd 那轮 + 隔离僵尸余波 ----
+#
+# 2026-10-14 实测：agentd 单轮 15 次工具循环要 315s，而客户端 300s 就判超时
+# —— 正常的长回答在生成到一半时被杀（半截答案 + 一行 AcpError）。两个教训：
+#   1. 超时值必须高于合法轮次的耗时（现在默认 900s，env 可覆盖）；
+#   2. 超时只是"客户端不再等"，agentd 那轮还在跑。不通知它停，它就以僵尸轮
+#      跑完：占着会话锁、把残文发进通知队列污染下一轮。所以超时要连带发
+#      session/cancel + 孤儿隔离（_read_stdout 里按 rid 认领）。
+
+import pytest  # noqa: E402
+
+from forgeagent import acp_client  # noqa: E402
+from forgeagent.acp_client import (  # noqa: E402
+    M_CANCEL,
+    M_PERMISSION,
+    M_PROMPT,
+    AcpTimeoutError,
+)
+
+
+def test_default_timeout_covers_legit_long_turns(monkeypatch):
+    """300s 低于 agentd 单轮上限（16 步 × 120s），实测 15 轮就要 315s。"""
+    monkeypatch.delenv("FORGEAGENT_PROMPT_TIMEOUT", raising=False)
+    assert acp_client.DEFAULT_TIMEOUT >= 900.0
+    # 没设环境变量时，默认值就是 DEFAULT_TIMEOUT
+    assert acp_client._env_timeout() == acp_client.DEFAULT_TIMEOUT
+
+
+def test_timeout_env_override(monkeypatch):
+    """FORGEAGENT_PROMPT_TIMEOUT 可覆盖；非法/非正数回落默认值。"""
+    monkeypatch.setenv("FORGEAGENT_PROMPT_TIMEOUT", "42")
+    assert acp_client._env_timeout() == 42.0
+    monkeypatch.setenv("FORGEAGENT_PROMPT_TIMEOUT", "abc")
+    assert acp_client._env_timeout() == acp_client.DEFAULT_TIMEOUT
+    monkeypatch.setenv("FORGEAGENT_PROMPT_TIMEOUT", "-1")
+    assert acp_client._env_timeout() == acp_client.DEFAULT_TIMEOUT
+
+
+async def test_prompt_timeout_sends_cancel_and_raises_timeout_error():
+    """超时必须转化成对 agentd 的停止指令，否则那轮会变僵尸继续跑。"""
+    client = AcpClient(timeout=0.05)
+    client._proc = _FakeProc()
+    client.session_id = "s1"
+
+    with pytest.raises(AcpTimeoutError):
+        await client._call(M_PROMPT, {"sessionId": "s1", "prompt": []})
+
+    frames = client._proc.stdin.frames
+    assert frames[0]["method"] == M_PROMPT
+    assert frames[1] == {
+        "jsonrpc": "2.0",
+        "method": M_CANCEL,
+        "params": {"sessionId": "s1"},
+    }
+    assert client._orphan_rid == 1  # 被放弃的那轮被记下，隔离从此生效
+    # 子类关系不能丢：现有 `except AcpError` 的调用方（TUI/bridge）行为不变
+    assert isinstance(AcpTimeoutError("x"), acp_client.AcpError)
+
+
+async def test_zombie_notifications_dropped_until_its_response():
+    """僵尸轮的通知不能入队 —— 会被下一轮 prompt 消费，污染下一轮正文。"""
+    client = AcpClient()
+    reader = asyncio.StreamReader()
+    client._proc = _FakeProc(stdout=reader)
+    client._orphan_rid = 7  # 模拟：第 7 号 prompt 已超时放弃
+
+    task = asyncio.ensure_future(client._read_stdout())
+    try:
+        reader.feed_data(
+            json.dumps(_notify("agent_message_chunk", "僵尸残文")).encode() + b"\n"
+        )
+        reader.feed_data(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": 7, "result": {"stopReason": "cancelled"}}
+            ).encode()
+            + b"\n"
+        )
+        for _ in range(100):
+            if client._orphan_rid is None:
+                break
+            await asyncio.sleep(0.01)
+
+        assert client._notifications.empty()  # 残文没进队列
+        assert client._orphan_rid is None  # 隔离随它的响应帧到达而解除
+        assert client._orphan_stop_reason == "cancelled"
+        assert client._orphan_settled.is_set()
+    finally:
+        task.cancel()
+
+
+async def test_zombie_permission_request_is_auto_cancelled():
+    """僵尸轮发来的审批不能弹给用户（那轮已经结束了），但帧必须回。"""
+    client = AcpClient()
+    reader = asyncio.StreamReader()
+    client._proc = _FakeProc(stdout=reader)
+    client._orphan_rid = 7
+    seen: list = []
+    client.on_permission = seen.append
+
+    task = asyncio.ensure_future(client._read_stdout())
+    try:
+        frame = {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": M_PERMISSION,
+            "params": PERM_PARAMS,
+        }
+        reader.feed_data(json.dumps(frame).encode() + b"\n")
+        await _settle(client)
+
+        assert seen == []  # 没弹给界面
+        assert client._proc.stdin.frames == [
+            {"jsonrpc": "2.0", "id": 3, "result": {"outcome": {"outcome": "cancelled"}}}
+        ]
+    finally:
+        task.cancel()
+
+
+async def test_non_orphan_response_still_processed_while_isolating():
+    """隔离只针对僵尸轮：并发的其他请求（如 set_mode）响应照常放行。"""
+    client = AcpClient()
+    reader = asyncio.StreamReader()
+    client._proc = _FakeProc(stdout=reader)
+    client._orphan_rid = 7
+    other: asyncio.Future = asyncio.get_running_loop().create_future()
+    client._pending[9] = other
+
+    task = asyncio.ensure_future(client._read_stdout())
+    try:
+        reader.feed_data(
+            json.dumps({"jsonrpc": "2.0", "id": 9, "result": {"modes": None}}).encode()
+            + b"\n"
+        )
+        msg = await asyncio.wait_for(other, timeout=2)
+        assert msg["result"] == {"modes": None}
+        assert client._orphan_rid == 7  # 隔离没被误解除
+    finally:
+        task.cancel()
+
+
+async def test_prompt_timeout_flow_stops_zombie_and_reports_actionably(monkeypatch):
+    """端到端：超时 → 先提示"正在停止" → 僵尸收尾 → 可操作的错误文案。
+
+    同时钉死"下一轮不被污染"：僵尸轮在收尾前发的残文，一条都不许进通知队列。
+    """
+    monkeypatch.setattr(acp_client, "_ZOMBIE_SETTLE", 0.2)
+    client = AcpClient(timeout=0.05)
+    reader = asyncio.StreamReader()
+    client._proc = _FakeProc(stdout=reader)
+    client.session_id = "s1"
+
+    task = asyncio.ensure_future(client._read_stdout())
+    gen = client.prompt("帮我规划一个rag的项目")
+    try:
+        # 第一帧：超时后的"正在停止"提示（是说明，不是错误）
+        first = await asyncio.wait_for(gen.__anext__(), timeout=2)
+        assert "停止本轮" in first.notice
+        assert client._orphan_rid == 1
+
+        # 僵尸轮的余波：残文 + 它自己的响应帧（stopReason=cancelled）
+        reader.feed_data(
+            json.dumps(_notify("agent_message_chunk", "僵尸残文")).encode() + b"\n"
+        )
+        reader.feed_data(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": 1, "result": {"stopReason": "cancelled"}}
+            ).encode()
+            + b"\n"
+        )
+
+        with pytest.raises(acp_client.AcpError) as ei:
+            await asyncio.wait_for(gen.__anext__(), timeout=2)
+        assert "本轮已停止" in str(ei.value)
+        # 文案里的秒数用实例自己的 timeout，别把默认值 900 写进来
+        assert "0.05s" in str(ei.value)
+        assert client._notifications.empty()  # 残文没留给下一轮
+
+        methods = [f["method"] for f in client._proc.stdin.frames]
+        assert methods == [M_PROMPT, M_CANCEL]
+    finally:
+        task.cancel()
+        await gen.aclose()
+
+
+async def test_prompt_timeout_reports_completed_but_undelivered(monkeypatch):
+    """僵尸轮其实自己跑完了（stopReason=end_turn）：告诉用户回复已落库，
+    别让人以为白跑了 —— 完整答案重新打开会话就能看到。"""
+    monkeypatch.setattr(acp_client, "_ZOMBIE_SETTLE", 0.2)
+    client = AcpClient(timeout=0.05)
+    reader = asyncio.StreamReader()
+    client._proc = _FakeProc(stdout=reader)
+    client.session_id = "s1"
+
+    task = asyncio.ensure_future(client._read_stdout())
+    gen = client.prompt("hi")
+    try:
+        await asyncio.wait_for(gen.__anext__(), timeout=2)  # "正在停止"提示
+        reader.feed_data(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": 1, "result": {"stopReason": "end_turn"}}
+            ).encode()
+            + b"\n"
+        )
+        with pytest.raises(acp_client.AcpError) as ei:
+            await asyncio.wait_for(gen.__anext__(), timeout=2)
+        assert "已生成完" in str(ei.value)
+        assert "会话历史" in str(ei.value)
+    finally:
+        task.cancel()
+        await gen.aclose()
+
+
+async def test_prompt_timeout_reports_still_settling_when_zombie_wont_stop(monkeypatch):
+    """僵尸轮迟迟不收尾：文案说清"仍在收尾"，且隔离继续生效。"""
+    monkeypatch.setattr(acp_client, "_ZOMBIE_SETTLE", 0.05)
+    client = AcpClient(timeout=0.05)
+    reader = asyncio.StreamReader()
+    client._proc = _FakeProc(stdout=reader)
+    client.session_id = "s1"
+
+    task = asyncio.ensure_future(client._read_stdout())
+    gen = client.prompt("hi")
+    try:
+        await asyncio.wait_for(gen.__anext__(), timeout=2)  # "正在停止"提示
+        with pytest.raises(acp_client.AcpError) as ei:
+            await asyncio.wait_for(gen.__anext__(), timeout=2)
+        assert "仍在收尾" in str(ei.value)
+        assert client._orphan_rid == 1  # 隔离继续
+
+        # 隔离期后才到的残文，照样进不了队列
+        reader.feed_data(
+            json.dumps(_notify("agent_message_chunk", "迟到的残文")).encode() + b"\n"
+        )
+        for _ in range(100):
+            if not client._notifications.empty():
+                break
+            await asyncio.sleep(0.01)
+        assert client._notifications.empty()
+    finally:
+        task.cancel()
+        await gen.aclose()

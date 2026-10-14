@@ -20,7 +20,7 @@ import queue
 import threading
 from typing import Any
 
-from ..acp_client import AcpClient, PermissionRequest, Turn
+from ..acp_client import AcpClient, AcpError, PermissionRequest, Turn
 
 DEFAULT_POLL_TIMEOUT = 2.0  # JS 每次 await 的阻塞上限
 _MAX_BATCH = 500  # 一次取走上限，防止生成极快时单批过大
@@ -462,10 +462,17 @@ class Bridge:
                         last[role] = len(value)
                 # 计划（plan 模式）：快照序列化后比对，变了就整份发 —— 前端拿到
                 # 直接替换，条目状态（pending → in_progress → completed）实时可见。
+                # `t.plan and` 这道闸不能省：agent 档 t.plan 恒为 []，
+                # json.dumps([]) == "[]" 与初值 "" 恒不等，不加的话每回合首帧
+                # 都发一条 entries=[] 的假 plan 事件，前端据此建一张只有标题的
+                # 空「执行计划」卡（2026-10-14 修，复现 out/repro_empty_plan.py）。
                 plan_snap = json.dumps(t.plan, ensure_ascii=False, sort_keys=True)
-                if plan_snap != seen_plan:
+                if t.plan and plan_snap != seen_plan:
                     seen_plan = plan_snap
-                    self._emit(type="plan", entries=t.plan)
+                    # 条目逐个拷贝：事件进队列后可能过一会儿才被序列化推给前端，
+                    # 不能和 Turn 的活引用共享 —— 客户端若就地改条目，慢消费会
+                    # 看到后写的状态。acp_client 当前是整体重绑，这里防契约漂移。
+                    self._emit(type="plan", entries=[dict(e) for e in t.plan])
                 # 工具卡片：状态有变就发一条（同一个 call_id 会被前端就地更新）
                 for tool in t.tools:
                     snap = (tool.status, tool.output)
@@ -480,7 +487,10 @@ class Bridge:
                             output=tool.output,
                         )
         except Exception as exc:  # noqa: BLE001 - 边界处统一转事件
-            msg = f"{type(exc).__name__}: {exc}"
+            # AcpError 的消息本身就是给人看的（"agent 进程已退出"、"session/prompt
+            # 超时（900s），本轮已停止…"），再缀一个 "AcpError: " 前缀只是噪音；
+            # 其他异常保留类型名，排障要用。
+            msg = str(exc) if isinstance(exc, AcpError) else f"{type(exc).__name__}: {exc}"
             self._emit(type="delta", role="error", text=msg)
             self._emit(type="done", stop="", error=msg)
             self._busy = False

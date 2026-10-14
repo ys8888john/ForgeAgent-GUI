@@ -392,6 +392,32 @@ def test_prompt_exception_becomes_error_event_not_crash():
         bridge.close()
 
 
+def test_acp_error_message_shown_without_type_prefix():
+    """AcpError 的消息本身就是给人看的，别再缀一个 "AcpError: " 前缀。
+
+    2026-10-14 用户在界面上看到的超时错误就是
+    "AcpError:session/prompt 超时 (300.0s)" 这种带前缀的原始形状 ——
+    前缀只是噪音，文案本身已经说清了事和建议。
+    """
+    from forgeagent.acp_client import AcpError
+
+    class _AcpFailClient(_FakeClient):
+        async def prompt(self, text: str, images=None):
+            raise AcpError("session/prompt 超时（900s），本轮已停止。可缩小问题范围")
+            yield  # pragma: no cover - 让它成为 async generator
+
+    bridge = Bridge(client=_AcpFailClient())
+    try:
+        bridge.send("会超时的问题")
+        evs = _drain_until_done(bridge)
+        done = evs[-1]
+        assert done["type"] == "done"
+        assert done["error"] == "session/prompt 超时（900s），本轮已停止。可缩小问题范围"
+        assert "AcpError" not in done["error"]
+    finally:
+        bridge.close()
+
+
 def test_thought_and_error_go_to_their_own_roles():
     """思考 / 正文 / 错误要分角色，界面才能分开渲染。"""
 
@@ -497,6 +523,72 @@ def test_no_tool_events_for_plain_reply():
         bridge.send("普通问题")
         evs = _drain_until_done(bridge)
         assert [e for e in evs if e["type"] == "tool"] == []
+    finally:
+        bridge.close()
+
+
+# ---- 计划事件（plan 模式）----
+
+
+class _PlanClient(_FakeClient):
+    """吐带计划条目的 Turn：两条 pending，随后推进第一条的状态。
+
+    和真实 _apply_plan 一样**整体重绑** turn.plan（新 list + 新 dict）——
+    就地改字典的话，bridge 队列里多个事件会共享同一批 dict，快照语义全失真。
+    """
+
+    async def prompt(self, text: str, images=None):
+        turn = Turn(user=text)
+        turn.plan = [
+            {"content": "读一下需求", "priority": "high", "status": "pending"},
+            {"content": "写实现", "priority": "medium", "status": "pending"},
+        ]
+        yield turn            # -> 应发一条 plan（两条 pending）
+        yield turn            # -> 快照没变，不该重复发
+        turn.plan = [
+            {"content": "读一下需求", "priority": "high", "status": "in_progress"},
+            {"content": "写实现", "priority": "medium", "status": "pending"},
+        ]
+        yield turn            # -> 状态变了，应再发一条
+        turn.plan = [
+            {"content": "读一下需求", "priority": "high", "status": "completed"},
+            {"content": "写实现", "priority": "medium", "status": "pending"},
+        ]
+        turn.stop_reason = "end_turn"
+        yield turn            # -> 又变了一次，应再发一条
+
+
+def test_no_plan_events_when_plan_stays_empty():
+    """无计划的回合（agent 档常态）一条 plan 事件都不该发。
+
+    2026-10-14 前的 bug：seen_plan 初值 "" 与 json.dumps([]) == "[]" 恒不等，
+    每回合首帧都发一条 entries=[] 的假事件，前端据此建一张只有标题的空
+    「执行计划」卡 —— 用户看到的「随便发条消息都输出执行计划」。
+    """
+    bridge = Bridge(client=_FakeClient(chunks=("你", "好")))
+    try:
+        bridge.send("普通问题")
+        evs = _drain_until_done(bridge)
+        assert [e for e in evs if e["type"] == "plan"] == []
+    finally:
+        bridge.close()
+
+
+def test_plan_events_are_emitted_on_change_with_dedup():
+    """有计划时：快照变了才整份发，没变不重复发（否则界面高频重绘）。"""
+    bridge = Bridge(client=_PlanClient())
+    try:
+        bridge.send("规划一下")
+        evs = _drain_until_done(bridge)
+        plans = [e for e in evs if e["type"] == "plan"]
+        assert len(plans) == 3, plans
+        assert [e["entries"][0]["status"] for e in plans] == [
+            "pending",
+            "in_progress",
+            "completed",
+        ]
+        # 全量快照语义：没动过的第二条也得在每条事件里
+        assert all(len(e["entries"]) == 2 for e in plans)
     finally:
         bridge.close()
 

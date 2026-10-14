@@ -47,7 +47,28 @@ except Exception:  # 没装 SDK 也能跑
     PROTOCOL_VERSION = 1
 
 
-DEFAULT_TIMEOUT = 300.0  # 一轮生成可能很长，给足
+# 一轮 prompt 的兜底超时（秒）。
+#
+# 为什么从 300 提到 900：agentd 单轮的上限是 MAX_STEPS=16 次模型调用、
+# 每次最长 120s（kernel/llm.py 的 httpx.Timeout），而实测一轮 15 次工具
+# 循环就要 315s（2026-10-14 21:07，glm-4.5-air 云端）。300s 低于合法轮次
+# 的耗时，等于把正常的长回答在生成到一半时杀掉 —— 用户看到的就是半截
+# 答案加一行超时（同一天 22:29 的 RAG 规划轮就这么死的）。900s 覆盖
+# 16×50s 的现实最坏值；真卡死还有「停止」按钮和这条兜底，两条路都通。
+# 可用 FORGEAGENT_PROMPT_TIMEOUT 覆盖（秒）。
+DEFAULT_TIMEOUT = 900.0
+
+
+def _env_timeout() -> float:
+    """读 FORGEAGENT_PROMPT_TIMEOUT；缺失/非法/非正数回落 DEFAULT_TIMEOUT。"""
+    raw = (os.environ.get("FORGEAGENT_PROMPT_TIMEOUT") or "").strip()
+    if not raw:
+        return DEFAULT_TIMEOUT
+    try:
+        val = float(raw)
+    except ValueError:
+        return DEFAULT_TIMEOUT
+    return val if val > 0 else DEFAULT_TIMEOUT
 
 
 def _parse_additional_dirs(raw: str | None) -> list[str]:
@@ -73,10 +94,26 @@ STDERR_LIMIT = 500  # 环形缓冲上限，防止长时间跑把内存吃满
 # 会把读帧任务打死 —— 详见 start() 里的注释。acp SDK 同位置默认 50MB。
 _STDIO_FRAME_LIMIT = 64 * 1024 * 1024
 PERMISSION_TIMEOUT = 300.0  # 审批等这么久还没人答就按拒绝回帧（见 PermissionRequest）
+# prompt 超时后，最多再等多少秒等 agentd 那轮收尾。在飞的模型调用最长
+# 120s（agentd 的 httpx 超时），全等不起；等不到也不妨事 —— 孤儿隔离在
+# _read_stdout 里继续生效，只是新消息可能要多排一会儿队（内核按 session
+# 串行执行轮次，见 kernel.handle 的锁）。
+_ZOMBIE_SETTLE = 30.0
 
 
 class AcpError(RuntimeError):
     """agentd 返回 JSON-RPC error，或连接异常关闭。"""
+
+
+class AcpTimeoutError(AcpError):
+    """等一个请求的响应等过了头。
+
+    单独一个子类，是因为**超时和"对面报错"是两件事**：对面报错 = 这轮完了，
+    只是结果不好；超时 = 我们单方面不再等，而对面那轮还在跑（_call 会顺手
+    发 session/cancel，见那里）。prompt() 要靠这个区分决定要不要等僵尸轮
+    收尾、把错误说成什么样。是 AcpError 的子类，所以现有 `except AcpError`
+    的调用方（TUI、bridge）行为不变。
+    """
 
 
 # agentd 用 thought 通道送错误（ACP 的 stop_reason 只有五种，没有 error，
@@ -273,7 +310,7 @@ class AcpClient:
         command: list[str] | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: float | None = None,
         mcp_servers: list[dict] | None = None,
     ) -> None:
         # 默认用 sys.executable 而不是 "python"：
@@ -298,7 +335,8 @@ class AcpClient:
         # 现在的语义与 agentd 的 .env 一致：用户显式给的键覆盖同名环境变量，
         # 其余照常继承。GUI 的模型 profile 就靠这条路注入 AGENTD_* 变量。
         self._env = dict(env) if env else None
-        self._timeout = timeout
+        # None = 读环境变量/默认值（构造时算，改环境要对新 client 生效）
+        self._timeout = timeout if timeout is not None else _env_timeout()
         # 本会话要接入的 MCP server（ACP 格式），session/new 时带过去
         self._mcp_servers = list(mcp_servers or [])
         # 额外工作区（additionalDirectories）：从环境变量解析成绝对路径列表。
@@ -314,6 +352,15 @@ class AcpClient:
         self._next_id = 0
         self._pending: dict[int, asyncio.Future[dict]] = {}
         self._notifications: asyncio.Queue[dict] = asyncio.Queue()
+        # 被放弃的轮次（prompt 超时后 agentd 仍在跑的那一次）。_call 超时时
+        # 记下 rid 并已发 session/cancel；_read_stdout 在它的响应帧到达前
+        # 丢弃它的通知、回绝它的请求；prompt() 等它收尾再报错。
+        # 没有这套隔离的后果：僵尸轮把残文发进通知队列，被**下一轮** prompt
+        # 消费掉 —— 上一轮的尾巴混进下一轮正文，且下一轮还要先排在会话锁
+        # 后面干等（内核按 session 串行）。
+        self._orphan_rid: int | None = None
+        self._orphan_stop_reason: str = ""
+        self._orphan_settled: asyncio.Event = asyncio.Event()
         # 会话模式状态：new/load 响应里由 agentd 声明（None = 旧 agentd 没声明，
         # 界面据此隐藏切换器）。current_mode 是 UI 自报的期望值，权威在 agentd。
         self.modes: dict | None = None
@@ -353,6 +400,12 @@ class AcpClient:
 
     async def start(self) -> None:
         """拉起 agentd 并完成握手。失败会抛 AcpError。"""
+        # 新进程 = 新世界：上一轮遗留下来的孤儿标记对着新进程没有意义，
+        # 不清掉会把新进程的通知也当僵尸余波丢光（隔离只在 prompt 超时
+        # 后的同一个进程生命周期内有效）。
+        self._orphan_rid = None
+        self._orphan_stop_reason = ""
+        self._orphan_settled.clear()
         # 子进程环境：默认继承父进程的，但强制 stdout/stderr 走 UTF-8。
         # 否则在非 UTF-8 本机 locale（比如 Windows 上 PYTHONIOENCODING=cp936 /
         # 中文 GBK）时，agentd 打出的中文日志是 GBK 字节，而我们这边按 utf-8
@@ -527,11 +580,58 @@ class AcpClient:
         except asyncio.CancelledError:
             await self.cancel()
             raise
+        except AcpTimeoutError:
+            # 超时 ≠ 结束：agentd 那轮还在跑（_call 已发 session/cancel）。
+            # 先把话说清楚，再等它收尾 —— 等待期间 busy 不释放，用户没法把
+            # 新消息塞进一个还没收尾的僵尸轮后面（内核按 session 串行，插队的
+            # 结果是干等几分钟、一个事件都没有）。
+            turn.notice = f"等待超过 {self._timeout:g}s 未收到回复，正在停止本轮…"
+            yield turn
+            settled, stop_reason = await self._settle_zombie()
+            if settled and stop_reason and stop_reason != "cancelled":
+                # 轮次其实跑完了，只是响应没送到 —— 完整回复已落库
+                raise AcpError(
+                    f"session/prompt 超时（{self._timeout:g}s）：本轮实际已生成完"
+                    f"（stopReason={stop_reason}），完整回复已存入会话历史，"
+                    f"重新打开该会话即可看到"
+                )
+            if settled:
+                raise AcpError(
+                    f"session/prompt 超时（{self._timeout:g}s），本轮已停止。"
+                    f"可缩小问题范围、换更快的模型，或提前点「停止」中断"
+                )
+            raise AcpError(
+                f"session/prompt 超时（{self._timeout:g}s），已通知 agentd 停止"
+                f"（仍在收尾）。稍后可重试"
+            )
         finally:
             if notify_task is not None and not notify_task.done():
                 notify_task.cancel()
             if not task.done():
                 task.cancel()
+
+    async def _settle_zombie(self) -> tuple[bool, str]:
+        """等被放弃的那一轮真正收尾。返回 (是否等到, stopReason)。
+
+        只等 _ZOMBIE_SETTLE 秒：在飞的模型调用最长 120s，全等不起；等不到
+        也不妨事，_read_stdout 的孤儿隔离继续在后台生效。调用方（prompt 的
+        超时分支）保证此时 busy 仍未释放，不存在和新一轮抢队列的问题。
+        """
+        # 先排掉队列里已积压的僵尸通知 —— 它们永远没有人消费，留着就是
+        # 下一轮的污染源
+        while True:
+            try:
+                self._notifications.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        if self._orphan_rid is None:
+            # 排队期间就已经收尾了（_read_stdout 刚解除隔离）
+            return True, self._orphan_stop_reason
+        try:
+            await asyncio.wait_for(self._orphan_settled.wait(), timeout=_ZOMBIE_SETTLE)
+        except asyncio.TimeoutError:
+            return False, ""
+        return True, self._orphan_stop_reason
 
     async def cancel(self) -> None:
         """通知 agentd 中断当前轮次。
@@ -712,7 +812,22 @@ class AcpClient:
             msg = await asyncio.wait_for(fut, timeout=self._timeout)
         except asyncio.TimeoutError as exc:
             self._pending.pop(rid, None)
-            raise AcpError(f"{method} 超时（{self._timeout}s）") from exc
+            if method == M_PROMPT and self.session_id:
+                # 超时只是"客户端不再等"，agentd 那轮还在跑。必须通知它停：
+                # 否则它会以僵尸轮跑完 —— 占着会话锁、继续发通知，把下一轮
+                # 污染掉。取消是幂等通知，用户手点「停止」也是这一帧。
+                if self._orphan_rid is not None:
+                    # 上一轮僵尸还没收尾又超时了一轮：agentd 已经不正常了，
+                    # 记一笔，排障时能看到
+                    self._log(f"[acp] 上一轮 rid={self._orphan_rid} 未收尾，又超时 rid={rid}")
+                self._orphan_rid = rid
+                self._orphan_stop_reason = ""
+                self._orphan_settled.clear()
+                try:
+                    await self._notify(M_CANCEL, {"sessionId": self.session_id})
+                except AcpError:
+                    pass  # 进程已经没了，没什么可停的
+            raise AcpTimeoutError(f"{method} 超时（{self._timeout:g}s）") from exc
 
         if "error" in msg:
             err = msg["error"]
@@ -753,6 +868,40 @@ class AcpClient:
 
                 rid = msg.get("id")
                 method = msg.get("method")
+
+                # —— 孤儿轮隔离（prompt 超时放弃后 agentd 仍在跑的那轮）——
+                # 它收到 session/cancel 也不会立刻停：在飞的模型调用要等自己
+                # 返回（最长 120s），到工具边界才收尾。这期间：
+                #   通知 → 直接丢。入队就会被下一轮 prompt 消费，上一轮的残文
+                #          混进下一轮正文（丢一轮事小，脏下一轮事大）。
+                #   请求 → 必须回帧（不回 agentd 就永久挂在 await 上），但也不
+                #          能弹给用户 —— 那轮已经结束了。审批按 cancelled 回绝
+                #          （fail-closed，与"没人可问"同一形状），别的按未实现。
+                #   它自己的响应帧 → 隔离解除，通知 prompt() 收尾了。
+                if self._orphan_rid is not None:
+                    if method is None and rid == self._orphan_rid:
+                        self._orphan_rid = None
+                        self._orphan_stop_reason = str(
+                            (msg.get("result") or {}).get("stopReason", "")
+                        )
+                        self._orphan_settled.set()
+                        self._log("[acp] 超时的轮次已收尾，迟到的响应无人接收，丢弃")
+                        continue
+                    if isinstance(method, str):
+                        if rid is None:
+                            continue  # 僵尸轮的通知，丢
+                        if method == M_PERMISSION:
+                            self._log(f"[acp] 超时轮次的审批 {method}，按 cancelled 回绝")
+                            await self._respond(
+                                rid, {"outcome": {"outcome": "cancelled"}}
+                            )
+                        else:
+                            self._log(f"[acp] 超时轮次的请求 {method}，按未实现回绝")
+                            await self._respond_error(
+                                rid, -32601, f"客户端未实现 {method}"
+                            )
+                        continue
+                    # 不是僵尸轮的响应（并发调用，如 set_mode）→ 走下面的常规流程
 
                 if isinstance(method, str):
                     # 对方发起的东西
