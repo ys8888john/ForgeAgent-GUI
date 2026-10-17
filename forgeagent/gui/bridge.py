@@ -281,6 +281,32 @@ class Bridge:
         self._emit(type="mode", mode_id=mode_id)
         return {"ok": True, "mode_id": mode_id}
 
+    def approval(self, policy: str | None = None) -> dict:
+        """查询 / 切换审批策略（输入框右下的审批状态下拉框）。
+
+        policy 为空 = 查询 agentd 当前生效策略；否则切换（native / all /
+        none）。none 的 trust_all.json 落盘在 agentd 侧完成，bridge 只传话。
+        客户端缺方法（对接假 agent / 旧版 agentd）按不支持处理，前端拿到
+        ok=False 自己提示，不静默装成功。
+        """
+        if self._closed.is_set():
+            return {"ok": False, "error": "已关闭"}
+        if policy:
+            setter = getattr(self._client, "set_approval", None)
+            if not callable(setter):
+                return {"ok": False, "error": "当前客户端不支持切换审批策略"}
+            call = setter(policy)
+        else:
+            getter = getattr(self._client, "get_approval", None)
+            if not callable(getter):
+                return {"ok": False, "error": "当前客户端不支持查询审批策略"}
+            call = getter()
+        try:
+            result = self._submit(call).result(timeout=10)
+        except Exception as exc:  # noqa: BLE001 - 边界处统一转错误
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "policy": str(result or "")}
+
     def send(self, text: str, images: list[dict] | None = None) -> dict:
         """发一轮。立即返回，真正的流式在后台线程跑。
 

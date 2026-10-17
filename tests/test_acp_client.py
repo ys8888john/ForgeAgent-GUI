@@ -790,3 +790,37 @@ async def test_prompt_timeout_reports_still_settling_when_zombie_wont_stop(monke
     finally:
         task.cancel()
         await gen.aclose()
+
+
+# ---- 审批策略扩展方法（_approval）：方法名与载荷形状钉死 ----
+
+
+async def test_get_and_set_approval_use_ext_method(monkeypatch):
+    """get/set 都走 `_approval`（下划线前缀 = ACP ext method）。
+
+    方法名要是哪天改了，agentd 的 ext_method 会当场 ValueError（未知扩展
+    方法）—— 但那要等真机才能暴露，这里直接钉死字符串，改这边必挂测试。
+    """
+    client = AcpClient()
+    client._proc = object()  # set_approval 要求子进程已在（不真用它）
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_call(method, params):
+        calls.append((method, params))
+        return {"result": {"policy": params.get("policy") or "native"}}
+
+    monkeypatch.setattr(client, "_call", fake_call)
+    assert await client.get_approval() == "native"
+    assert await client.set_approval("none") == "none"
+    assert calls == [("_approval", {}), ("_approval", {"policy": "none"})]
+
+
+async def test_set_approval_requires_running_agent():
+    """没起子进程就调 set：当场 AcpError，而不是发一帧永远没人回的请求。"""
+    client = AcpClient()
+    try:
+        await client.set_approval("none")
+    except acp_client.AcpError as exc:
+        assert "尚未启动" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("应当抛 AcpError")

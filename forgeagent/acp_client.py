@@ -257,6 +257,8 @@ M_PROMPT = _method(AGENT_METHODS, ("session_prompt", "prompt"), "session/prompt"
 M_CANCEL = _method(AGENT_METHODS, ("session_cancel", "cancel"), "session/cancel")
 M_LOAD = _method(AGENT_METHODS, ("session_load", "load_session"), "session/load")
 M_SET_MODE = _method(AGENT_METHODS, ("session_set_mode", "set_session_mode"), "session/set_mode")
+# agentd 私有扩展方法（下划线前缀 = ACP ext method，见 agentd ext_method 的 docstring）
+M_APPROVAL = "_approval"
 M_UPDATE = _method(CLIENT_METHODS, ("session_update",), "session/update")
 # agent -> client 的审批请求。这个是**反方向**的方法（agent 发起、客户端应答），
 # 但它同样登记在 CLIENT_METHODS 里（"客户端要实现的那些方法"）。
@@ -491,6 +493,27 @@ class AcpClient:
         await self._call(M_SET_MODE, {"sessionId": self.session_id, "modeId": mode_id})
         self.current_mode = mode_id
         return mode_id
+
+    async def get_approval(self) -> str:
+        """查 agentd 当前生效的审批策略（扩展方法 ``_approval``）。
+
+        扩展方法名带下划线前缀：SDK 的 router 把 ``_xxx`` 路由到
+        ``agent.ext_method("xxx", ...)``（见 acp/agent/router.py），这是
+        ACP 标准方法之外的私有通道，只有自家 agentd 认。
+        """
+        resp = await self._call(M_APPROVAL, {})
+        return str((resp.get("result") or {}).get("policy") or "")
+
+    async def set_approval(self, policy: str) -> str:
+        """切换审批策略（native / all / none），agentd 进程内当场热翻。
+
+        none 的落盘（trust_all.json）在 agentd 侧完成 —— 这里只发意图，
+        不替 agentd 管它的持久化，两边状态才不会漂移。
+        """
+        if self._proc is None:
+            raise AcpError("agent 进程尚未启动")
+        resp = await self._call(M_APPROVAL, {"policy": policy})
+        return str((resp.get("result") or {}).get("policy") or policy)
 
     async def close(self) -> None:
         """收摊：停掉后台读取任务，终止子进程。"""

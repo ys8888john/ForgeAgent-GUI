@@ -977,6 +977,15 @@ class _Handler(BaseHTTPRequestHandler):
         if u.path == "/api/mode":
             return self._json(bridge.set_mode(str(body.get("mode_id") or "")))
 
+        # ---- 审批状态切换：native(每次问) / all(都要问) / none(允许完全访问) ----
+        # 真正的热翻在 agentd（ext_method "approval"）；这里只做取值校验，
+        # 非法值当场 400，别把垃圾传进 agentd 再靠它的 ValueError 兜底。
+        if u.path == "/api/approval":
+            policy = str(body.get("policy") or "").strip().lower()
+            if policy not in ("native", "all", "none"):
+                return self._fail(400, "policy 必须是 native / all / none")
+            return self._json(bridge.approval(policy))
+
         # ---- 会话"删除"：侧栏隐藏（库写方在 agentd，GUI 只维护本地名单）----
         if u.path == "/api/session/hide":
             sid = str(body.get("session_id") or "")
@@ -1221,6 +1230,24 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/hello":
             return self._json({"ok": True, "token_ok": True})
+
+        # ---- 审批状态查询：优先问 agentd（进程内真相），问不通本地推断 ----
+        # 本地推断的优先级与 agentd boot 一致：显式 env > trust_all.json 标记
+        # > 默认 native。explicit 非空时前端会在菜单里提示"被环境变量固定"。
+        if path == "/api/approval":
+            explicit = os.environ.get("AGENTD_TOOLS_APPROVE", "").strip().lower()
+            res = bridge.approval()
+            if res.get("ok"):
+                return self._json(
+                    {"ok": True, "policy": res["policy"], "explicit": explicit or None}
+                )
+            try:
+                from agentd import trust as _agentd_trust
+
+                policy = explicit or ("none" if _agentd_trust.trust_enabled() else "native")
+            except Exception:  # noqa: BLE001 - 连 agentd 包都缺时按默认档
+                policy = explicit or "native"
+            return self._json({"ok": True, "policy": policy, "explicit": explicit or None})
 
         # ---- 附件图片：只服务本进程上传过的（id 认领），别无来源 ----
         if path.startswith("/api/file/"):

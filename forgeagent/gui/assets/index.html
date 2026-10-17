@@ -591,21 +591,57 @@
   #composer-row {
     display: flex; gap: 8px; align-items: flex-end;
   }
-  /* 模式三档：一排 pill，当前档反色高亮。贴着输入框放（欢迎页和对话页各一份
-     容器，见 renderModes）—— 模式说的是"这一轮怎么干"，放在手边比收进 header
-     合适：header 已经排了标题 / 状态 / 空间 / +空间 / 模型 / 齿轮六个东西，
-     窄窗口下再塞一个必然挤爆。 */
-  .mode-switch { display: flex; gap: 4px; align-items: center; }
-  .mode-switch:empty { display: none; }
-  .mode-switch button {
+  /* 输入框下的工具条：左边模式下拉、右边审批状态下拉（对标 WorkBuddy
+     底部状态条「⎇ main ｜ 允许完全访问 ∨」的布局，2026-10-17 改版）。
+     两页（对话页 / 欢迎页）各一份容器，见 renderModes / renderApprovalSwitches
+     —— 复制 DOM 但不复制逻辑。 */
+  .composer-tools {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  .mode-switch, .approval-switch { position: relative; display: inline-flex; }
+  .mode-switch:empty, .approval-switch:empty { display: none; }
+  .mode-trigger, .approval-trigger {
+    display: inline-flex; align-items: center; gap: 6px;
     font-family: inherit; font-size: 12px; line-height: 1.2;
     padding: 4px 10px; border-radius: 999px; cursor: pointer;
-    border: 1px solid var(--border); background: var(--bg); color: var(--text-dim);
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    font-weight: 600;
   }
-  .mode-switch button:hover { border-color: var(--accent); color: var(--accent); }
-  /* 激活 pill 用 text/bg 反色：不写死颜色，亮暗主题下都自动成立 */
-  .mode-switch button.active {
-    background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600;
+  .mode-trigger:hover, .approval-trigger:hover { border-color: var(--accent); color: var(--accent); }
+  .mode-trigger svg, .approval-trigger svg { flex: none; }
+  .mode-switch.open .dd-caret, .approval-switch.open .dd-caret { transform: rotate(180deg); }
+  .dd-caret { transition: transform .15s; }
+  /* 「允许完全访问」= 危险状态：触发器染红（对标 WorkBuddy 的红色审批态）。
+     用 --danger/--danger-bg 主题 token，亮暗主题都自动成立。 */
+  .approval-switch.policy-none .approval-trigger {
+    color: var(--danger); border-color: var(--danger); background: var(--danger-bg);
+  }
+  .approval-switch.policy-none .approval-trigger:hover { filter: brightness(0.97); }
+  /* 下拉菜单：贴着底部工具条向上弹（fixed 菜单要 JS 摆位，这里容器就是
+     position:relative 的锚点，纯 CSS 定位即可）。 */
+  .dd-menu {
+    position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 80;
+    min-width: 230px; max-width: 320px; padding: 6px; display: none;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.14);
+  }
+  .dd-menu.align-right { left: auto; right: 0; }
+  .dd-menu.open { display: block; }
+  .dd-item {
+    display: block; width: 100%; text-align: left;
+    font-family: inherit; font-size: 12px; line-height: 1.35;
+    padding: 7px 10px; border: 0; border-radius: 7px; cursor: pointer;
+    background: transparent; color: var(--text);
+  }
+  .dd-item:hover { background: var(--bg-soft); }
+  .dd-item .dd-name { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+  .dd-item .dd-desc { display: block; margin-top: 2px; color: var(--text-dim); font-weight: 400; }
+  .dd-item.current { background: var(--bg-soft); }
+  .dd-item.current .dd-name::after { content: "✓"; margin-left: auto; color: var(--accent); }
+  .dd-item.dd-none .dd-name { color: var(--danger); }
+  .dd-hint {
+    padding: 6px 10px 4px; font-size: 11px; color: var(--text-dim);
+    border-top: 1px solid var(--border); margin-top: 4px;
   }
   /* 待发送图片条：空时不出现，不占一行 */
   #attach-strip { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -1092,7 +1128,10 @@
       <div class="w-box">
         <textarea id="w-input" rows="2" placeholder="今天帮你做些什么？（Enter 发送，Shift+Enter 换行）"></textarea>
         <div id="w-attach-strip"></div>
-        <div id="w-mode-switch" class="mode-switch" role="group" aria-label="会话模式"></div>
+        <div class="composer-tools">
+          <div id="w-mode-switch" class="mode-switch" role="group" aria-label="会话模式"></div>
+          <div class="approval-switch" role="group" aria-label="审批状态"></div>
+        </div>
         <div class="w-foot">
           <div class="w-meta">
             <span class="w-frag" id="w-space" title="当前空间">📁 …</span>
@@ -1135,7 +1174,10 @@
            空列表 = 对接的是没实现模式声明的旧 agentd —— 整条隐藏，一切照旧。
            两处容器（对话页 / 欢迎页）由同一个 renderModes 填充，切一处另一处
            跟着变 —— 复制 DOM 但不复制逻辑。 -->
-      <div id="mode-switch" class="mode-switch" role="group" aria-label="会话模式"></div>
+      <div class="composer-tools">
+        <div id="mode-switch" class="mode-switch" role="group" aria-label="会话模式"></div>
+        <div class="approval-switch" role="group" aria-label="审批状态"></div>
+      </div>
       <input id="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple hidden>
     </div>
     <div class="hint">Ctrl/Cmd + L 看日志　·　Ctrl/Cmd + Enter 发送　·　点左侧会话可续聊</div>
@@ -1354,7 +1396,11 @@
   var modeSwitches = Array.prototype.slice
     .call(document.querySelectorAll(".mode-switch"))
     .filter(Boolean);
-  var currentMode = "agent";  // 三档里当前选中的那档（状态载体，见 renderModes）
+  // 审批状态下拉容器（对话页 / 欢迎页各一份），由 renderApprovalSwitches 填充。
+  // 当前模式 / 审批策略的状态载体在 modeState / approvalState（见下拉实现段）。
+  var approvalSwitches = Array.prototype.slice
+    .call(document.querySelectorAll(".approval-switch"))
+    .filter(Boolean);
   var stopBtn = document.getElementById("stop");
   var dot = document.getElementById("dot");
   var statusText = document.getElementById("status-text");
@@ -1889,52 +1935,182 @@
     el._resend = btn;
   }
 
-  // 模式切换器：agentd 在 new/load 响应里声明可用模式（availableModes），
-  // 每次会话变化（start/new/resume）bridge 会推 modes 事件来刷新。
-  // 空列表 = 对接的是没实现模式声明的旧 agentd —— 整条隐藏，一切照旧。
+  // 模式切换器 + 审批状态下拉（输入框下工具条，对标 WorkBuddy 底部状态条）。
+  // agentd 在 new/load 响应里声明可用模式（availableModes），每次会话变化
+  // （start/new/resume）bridge 推 modes 事件来刷新。空列表 = 对接的是没实现
+  // 模式声明的旧 agentd —— 整条隐藏，一切照旧。
   //
-  // 刻意做成一排可见的 pill 而不是下拉框：模式是"这一轮怎么干"的显式承诺，
-  // 收进一个 120px 的下拉里等于藏起来（上一版就是这样，于是才有人问
-  // "我这个请求怎么被当成 plan 了"）。
-  function renderModes(ev) {
-    var list = ev.available || [];
-    modeSwitches.forEach(function (box) {
-      box.innerHTML = "";
-      list.forEach(function (m) { box.appendChild(modeButton(m)); });
-    });
-    applyMode(ev.current || "agent");
+  // 2026-10-17 从「一排可见 pill」改成单个下拉：主人要求对齐 WorkBuddy 的
+  // select 样式，且同一行右侧要放审批状态下拉，一行塞不下四个 pill。
+  // 当初做 pill 是怕模式藏进下拉被误当成 plan —— 折衷：触发器上常显当前
+  // 模式名（不是只画图标），"现在是什么模式"一眼可见，误发问题由文字兜住。
+  var modeState = { list: [], current: "agent" };
+  var approvalState = { policy: "native", explicit: null };
+  var APPROVAL_ITEMS = [
+    { id: "native", name: "每次询问", desc: "写文件、跑命令前先问你（默认）" },
+    { id: "all", name: "所有操作都要审批", desc: "连读文件、联网也先问（最严格）" },
+    { id: "none", name: "允许完全访问", desc: "所有工具直接执行不再询问；删除 ~/.agentd/trust_all.json 可恢复" }
+  ];
+  // 审批下拉的文案与 agentd 的 POLICIES 一一对应，值由 /api/approval 原样
+  // 传给 agentd 的 ext_method —— 这里不认识的值直接显示原样（别猜）。
+  function approvalLabel(id) {
+    for (var i = 0; i < APPROVAL_ITEMS.length; i++)
+      if (APPROVAL_ITEMS[i].id === id) return APPROVAL_ITEMS[i].name;
+    return id || "每次询问";
   }
 
-  function modeButton(m) {
+  var DD_CARET_SVG = '<svg class="dd-caret" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+  var SHIELD_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>';
+
+  function closeAllDdMenus() {
+    Array.prototype.forEach.call(document.querySelectorAll(".dd-menu.open"), function (m) {
+      m.classList.remove("open");
+      if (m.parentElement) m.parentElement.classList.remove("open");
+    });
+  }
+
+  // 通用下拉构造：触发器 + 向上弹的菜单挂进 box（box 是 position:relative 锚点）。
+  // pick(item) 处理选中；当前项只关闭菜单不触发 pick（点了要有反应但不能重复提交）。
+  function buildDropdown(box, opts) {
+    box.classList.remove("open");
+    box.innerHTML = "";
     var btn = document.createElement("button");
     btn.type = "button";
-    btn.dataset.mode = m.id;
-    btn.textContent = m.name || m.id;
-    if (m.description) btn.title = m.description;
-    btn.addEventListener("click", function () { selectMode(m.id); });
-    return btn;
+    btn.className = opts.triggerClass;
+    btn.innerHTML = opts.triggerHtml;
+    var menu = document.createElement("div");
+    menu.className = "dd-menu" + (opts.alignRight ? " align-right" : "");
+    (opts.items || []).forEach(function (it) {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.className = "dd-item" + (it.current ? " current" : "") +
+        (it.extraClass ? " " + it.extraClass : "");
+      item.innerHTML = '<span class="dd-name">' + escapeHtml(it.name) + "</span>" +
+        (it.desc ? '<span class="dd-desc">' + escapeHtml(it.desc) + "</span>" : "");
+      if (it.title) item.title = it.title;
+      item.addEventListener("click", function () {
+        closeAllDdMenus();
+        if (!it.current && opts.pick) opts.pick(it);
+      });
+      menu.appendChild(item);
+    });
+    if (opts.hint) {
+      var h = document.createElement("div");
+      h.className = "dd-hint";
+      h.textContent = opts.hint;
+      menu.appendChild(h);
+    }
+    btn.addEventListener("click", function () {
+      var willOpen = !menu.classList.contains("open");
+      closeAllDdMenus();
+      if (willOpen) { menu.classList.add("open"); box.classList.add("open"); }
+    });
+    box.appendChild(btn);
+    box.appendChild(menu);
   }
 
-  // 只改高亮、不发请求。用于 renderModes 与后端推来的 mode 事件 —— 这两种情况
-  // 下模式已经是这个值了，再 POST 一次纯属多余（还会打断输入框焦点）。
-  function applyMode(id) {
-    currentMode = id;
+  // 点外面 / Esc 关所有下拉（与模型菜单、目录菜单同一套做法）
+  document.addEventListener("mousedown", function (e) {
+    var open = document.querySelector(".dd-menu.open");
+    if (!open) return;
+    var box = open.parentElement;
+    if (box && box.contains(e.target)) return;
+    closeAllDdMenus();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closeAllDdMenus();
+  });
+
+  function renderModes(ev) {
+    modeState.list = ev.available || [];
+    modeState.current = ev.current || "agent";
+    renderModeSwitches();
+  }
+
+  function renderModeSwitches() {
     modeSwitches.forEach(function (box) {
-      var kids = Array.prototype.slice.call(box.children);
-      for (var i = 0; i < kids.length; i++) {
-        kids[i].classList.toggle("active", kids[i].dataset.mode === id);
-      }
+      if (!modeState.list.length) { box.innerHTML = ""; return; }
+      var cur = null;
+      modeState.list.forEach(function (m) { if (m.id === modeState.current) cur = m; });
+      if (!cur) cur = modeState.list[0];
+      buildDropdown(box, {
+        triggerClass: "mode-trigger",
+        triggerHtml: "<span>" + escapeHtml(cur.name || cur.id) + "</span>" + DD_CARET_SVG,
+        items: modeState.list.map(function (m) {
+          return {
+            id: m.id, name: m.name || m.id, desc: m.description || "",
+            current: m.id === modeState.current, title: m.description || ""
+          };
+        }),
+        pick: function (it) { selectMode(it.id); }
+      });
     });
   }
 
-  // 用户点了某一档：先高亮（点了要有反应），再同步给 agentd。
+  // 只改状态 + 重画，不发请求。用于 renderModes 与后端推来的 mode 事件 ——
+  // 这两种情况下模式已经是这个值了，再 POST 一次纯属多余。
+  function applyMode(id) {
+    modeState.current = id;
+    renderModeSwitches();
+  }
+
+  // 用户点了某一档：先重画（点了要有反应），再同步给 agentd。
   function selectMode(id) {
-    if (id === currentMode) return;
+    if (id === modeState.current) return;
     applyMode(id);
     api("/api/mode", { method: "POST", body: { mode_id: id } })
       .catch(function (e) { showErrorBubble("模式切换失败", String((e && e.message) || e)); })
       .finally(function () { input.focus(); });
   }
+
+  // ---- 审批状态下拉：查询/切换走 /api/approval（真策略在 agentd，这里只传话）----
+  function renderApprovalSwitches() {
+    approvalSwitches.forEach(function (box) {
+      box.classList.toggle("policy-none", approvalState.policy === "none");
+      buildDropdown(box, {
+        triggerClass: "approval-trigger",
+        triggerHtml: SHIELD_SVG + "<span>" +
+          escapeHtml(approvalLabel(approvalState.policy)) + "</span>" + DD_CARET_SVG,
+        alignRight: true,
+        items: APPROVAL_ITEMS.map(function (it) {
+          return {
+            id: it.id, name: it.name, desc: it.desc,
+            current: it.id === approvalState.policy,
+            extraClass: it.id === "none" ? "dd-none" : ""
+          };
+        }),
+        hint: approvalState.explicit
+          ? "策略已被环境变量 AGENTD_TOOLS_APPROVE=" + approvalState.explicit +
+            " 固定：本进程内切换仍生效，重启后以 env 为准"
+          : null,
+        pick: function (it) { selectApproval(it.id); }
+      });
+    });
+  }
+
+  function loadApprovalState() {
+    api("/api/approval").then(function (r) {
+      approvalState.policy = r.policy || "native";
+      approvalState.explicit = r.explicit || null;
+      renderApprovalSwitches();
+    }).catch(function () { renderApprovalSwitches(); });
+  }
+
+  function selectApproval(policy) {
+    if (policy === approvalState.policy) return;
+    api("/api/approval", { method: "POST", body: { policy: policy } })
+      .then(function (r) {
+        if (r && r.ok === false) {
+          showErrorBubble("切换失败", String(r.error || "agentd 不支持"));
+          return;
+        }
+        approvalState.policy = r.policy || policy;
+        renderApprovalSwitches();
+      })
+      .catch(function (e) { showErrorBubble("切换失败", String((e && e.message) || e)); });
+  }
+
+  loadApprovalState();
 
   /* HIGHLIGHT-BEGIN
      —— 保守的零依赖语法高亮（node 断言测试锚定本段，
@@ -2587,6 +2763,10 @@
       // 卡住」事故的界面侧病灶）。这两个改动都是瞬态，真正的
       // ToolCallDone 到达时会被覆盖。
       markPermissionAnswered(req, optionId);
+      // 点了「完全信任」的话，输入框右下的审批状态下拉要跟着变 —— 那个下拉
+      // 的状态源是 /api/approval（agentd 进程内策略 + trust_all.json），
+      // 拉一次就是最新真相，别在本地手改两份状态。
+      if (optionId === "trust_all") loadApprovalState();
       showNextPermission();
       report();
     });
