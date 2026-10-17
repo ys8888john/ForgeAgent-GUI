@@ -192,6 +192,11 @@ class SpaceManager:
             name = f"{base}{i}"
             i += 1
         self.add_space(name, path=str(target))
+        # add_space 只在「原本没有 active」时才激活（首次建 default 的场景）；
+        # 这里 active 必然已有值，必须显式切过来，否则新空间建了却不激活 ——
+        # list_spaces() 的 is_active 不翻面，前端欢迎页/下拉指示器不刷新，
+        # 重启后 active 还回落旧空间（--cwd 启动会开错空间）。
+        self.set_active(name)
         return name
 
     # ---- 会话绑定 ----

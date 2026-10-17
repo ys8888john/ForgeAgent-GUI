@@ -248,3 +248,73 @@ def test_space_ensure_path_idempotent(tmp_path):
         assert exc.value.code == 400
     finally:
         srv.stop()
+
+
+def test_space_ensure_activates_new_space_in_listing(tmp_path):
+    """回归（欢迎页空间指示器不刷新）：ensure 一个全新目录时，
+    /api/spaces 列表里新空间必须带 is_active —— 前端 loadSpaces() 只认这个
+    标记刷新 header 下拉和欢迎页底栏的「📁 <空间名>」。光响应体里的 active
+    字段对不算数（那是 owner 内存态，指示器不读它）。
+    """
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    srv = _server_with_spaces(tmp_path)
+    try:
+        # 先经正规入口建一个空间并进入，把 active 顶成非空的旧值
+        srv.client().post("/api/space/new", {"name": "first"})
+        before = srv.client().get("/api/spaces")
+        assert {s["name"]: s["is_active"] for s in before["spaces"]}["first"] is True
+
+        res = srv.client().post("/api/space/ensure", {"path": str(fresh)})
+        assert res["ok"] is True
+        assert res["active"] == "fresh"
+
+        after = srv.client().get("/api/spaces")
+        flags = {s["name"]: s["is_active"] for s in after["spaces"]}
+        assert flags["fresh"] is True, "新空间的 is_active 没翻面 -> 前端指示器不刷新"
+        assert flags["first"] is False, "旧空间应让位"
+        assert flags.get("default") is False
+
+        # 复用分支：再 ensure 一次同一目录，active 不动
+        res2 = srv.client().post("/api/space/ensure", {"path": str(fresh)})
+        assert res2["active"] == "fresh"
+        flags2 = {s["name"]: s["is_active"] for s in res2["spaces"]}
+        assert flags2["fresh"] is True
+
+        # ensure 一个「已有空间」的目录（first 默认落在 ~/.agentd/spaces/first）：
+        # 复用分支也必须激活，不能只建不切
+        first_path = srv.spaces.resolve_path("first")
+        res3 = srv.client().post("/api/space/ensure", {"path": first_path})
+        assert res3["active"] == "first"
+        flags3 = {s["name"]: s["is_active"] for s in res3["spaces"]}
+        assert flags3["first"] is True
+        assert flags3["fresh"] is False
+    finally:
+        srv.stop()
+
+
+def test_ensure_space_for_path_persists_active(tmp_path):
+    """SpaceManager 直测：新建分支 + 复用分支都要把 active 写进注册表
+    （spaces.json），否则 GUI 重启后 active 回落，--cwd 启动会开错空间。"""
+    meta = tmp_path / "spaces.json"
+    mgr = SpaceManager(meta_path=meta, session_spaces_path=tmp_path / "bindings.json")
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+
+    assert mgr.ensure_space_for_path(str(a)) == "a"
+    assert json.loads(meta.read_text(encoding="utf-8"))["active"] == "a"
+    assert mgr.active_name == "a"
+
+    # 第二个全新目录：active 必须继续前移到 b（add_space 不会自动激活）
+    assert mgr.ensure_space_for_path(str(b)) == "b"
+    assert json.loads(meta.read_text(encoding="utf-8"))["active"] == "b"
+    assert mgr.active_name == "b"
+
+    # 复用 a：active 切回 a，且不产生重复空间
+    assert mgr.ensure_space_for_path(str(a)) == "a"
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    assert data["active"] == "a"
+    assert [s["name"] for s in data["spaces"]].count("a") == 1
+    assert mgr.active_name == "a"
