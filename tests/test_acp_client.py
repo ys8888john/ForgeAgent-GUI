@@ -280,6 +280,7 @@ PERM_PARAMS = {
     "options": [
         {"optionId": "allow_once", "name": "允许一次", "kind": "allow_once"},
         {"optionId": "allow_session", "name": "本会话总是允许", "kind": "allow_always"},
+        {"optionId": "trust_all", "name": "完全信任（永不再问）", "kind": "allow_always"},
         {"optionId": "reject", "name": "拒绝", "kind": "reject_once"},
     ],
 }
@@ -329,7 +330,7 @@ async def test_permission_request_is_exposed_with_options():
     assert (req.request_id, req.session_id, req.call_id) == (42, "s1", "call_1")
     assert (req.title, req.kind) == ("run_command", "execute")
     assert req.detail == "command: echo hi"
-    assert req.allow_ids == ["allow_once", "allow_session"]
+    assert req.allow_ids == ["allow_once", "allow_session", "trust_all"]
     assert req.reject_id == "reject"
 
 

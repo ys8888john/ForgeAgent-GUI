@@ -23,6 +23,11 @@ print("[fake-agent] 启动", file=sys.stderr, flush=True)
 # 所以真正的回归测试在 test_acp_client.py 里手动制造 id 撞车。
 _next_req_id = 1000
 
+# 放行选项集合 —— 与真 agentd 的 acp_stdio._ALLOW_OPTION_IDS 逐条对应。
+# 假 agent 是测试替身，但它演的是"服务端审批逻辑"，判错一个选项
+# （trust_all 不以 allow 开头，老前缀判断就错过它）会让测试绿灯骗人。
+_ALLOW_OPTIONS = {"allow_once", "allow_session", "trust_all"}
+
 
 def send(frame: dict) -> None:
     sys.stdout.write(json.dumps(frame) + "\n")
@@ -68,6 +73,7 @@ def ask_permission(session_id: str) -> bool:
                 "options": [
                     {"optionId": "allow_once", "name": "允许一次", "kind": "allow_once"},
                     {"optionId": "allow_session", "name": "本会话总是允许", "kind": "allow_always"},
+                    {"optionId": "trust_all", "name": "完全信任（永不再问）", "kind": "allow_always"},
                     {"optionId": "reject", "name": "拒绝", "kind": "reject_once"},
                 ],
             },
@@ -77,7 +83,9 @@ def ask_permission(session_id: str) -> bool:
     outcome = (reply.get("result") or {}).get("outcome") or {}
     if outcome.get("outcome") != "selected":
         return False
-    return str(outcome.get("optionId") or "").startswith("allow")
+    # 与真 agentd 的 acp_stdio._ALLOW_OPTION_IDS 保持一致（trust_all 不以
+    # "allow" 开头，老的前缀判断会把它误判成拒绝）。
+    return str(outcome.get("optionId") or "") in _ALLOW_OPTIONS
 
 
 for line in sys.stdin:

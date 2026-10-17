@@ -744,6 +744,12 @@
   .perm-actions button.primary:hover { background: #1d4ed8; }
   .perm-actions button.warn { color: var(--danger); border-color: #fda29b; }
   .perm-actions button.warn:hover { background: var(--danger-bg); }
+  /* 「完全信任（永不再问）」：绿色 = 放行，但和 primary 的蓝区分开 ——
+     它比"允许一次"重得多（永久关闭审批），视觉上必须一眼可辨。 */
+  .perm-actions button.trust {
+    color: var(--ok); border-color: var(--ok-border); background: var(--ok-bg);
+  }
+  .perm-actions button.trust:hover { filter: brightness(0.97); }
   .perm-note { font-size: 11px; color: var(--text-dim); margin-top: 10px; }
 
   /* 模型选择器 & 管理弹窗 */
@@ -2547,7 +2553,14 @@
       var b = document.createElement("button");
       b.textContent = o.label || o.id || "选择";
       var kind = String(o.kind || "");
-      if (kind === "allow_always") b.className = "primary";
+      // 「完全信任」按 option_id 认，不按 kind：它的 kind 是 allow_always，
+      // 和「本会话总是允许」同一个值，光看 kind 分不开（2026-10-17）。
+      // 这个按钮会把审批**永久**关掉，所以给独立绿色样式 + 常驻 tooltip
+      // 讲清撤销方式 —— 用户有权在点之前知道怎么反悔。
+      if (o.id === "trust_all") {
+        b.className = "trust";
+        b.title = "此后所有工具调用都不再询问；删除 ~/.agentd/trust_all.json 可恢复提问";
+      } else if (kind === "allow_always") b.className = "primary";
       else if (kind.indexOf("allow") !== 0) b.className = "warn";
       b.addEventListener("click", function () { answerPermission(o.id); });
       box.appendChild(b);

@@ -114,6 +114,7 @@ async def test_permission_round_trip_allow(client: AcpClient):
     assert {o["optionId"] for o in req.options} == {
         "allow_once",
         "allow_session",
+        "trust_all",
         "reject",
     }
 
