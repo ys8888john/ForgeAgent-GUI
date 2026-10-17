@@ -2568,9 +2568,51 @@
       method: "POST",
       body: { id: req.id, option_id: optionId || "" }
     }).catch(function () {}).then(function () {
+      // 先把「已答复」反映到界面：agentd 批准后要到工具跑完才发 ToolCallDone，
+      // 中途没有任何 tool 事件 —— 不主动改的话，活动标签一直挂「等待你审批」、
+      // 卡片一直挂「等待中」，用户以为又卡住了（2026-10-14「总是允许还是
+      // 卡住」事故的界面侧病灶）。这两个改动都是瞬态，真正的
+      // ToolCallDone 到达时会被覆盖。
+      markPermissionAnswered(req, optionId);
       showNextPermission();
       report();
     });
+  }
+
+  // 答复审批后立刻更新对应工具卡片 + 活动标签。
+  // 允许 → 卡片转 running、标签「正在执行 xxx…」（批准到 Done 之间 agentd
+  //   不发任何事件，不改的话卡片挂「等待中」整整一个执行期）；
+  // 拒绝 → 卡片转 cancelled、标签「等待模型响应」（agentd 会立刻补一个
+  //   ToolCallDone(cancelled)，本地改动会被它覆盖，纯粹让界面先动起来）。
+  // 还有排队中的审批时标签保持「等待你审批」，让用户知道没完。
+  function markPermissionAnswered(req, optionId) {
+    var opts = req.options || [];
+    var chosen = null;
+    for (var i = 0; i < opts.length; i++) {
+      if ((opts[i].id || "") === (optionId || "")) { chosen = opts[i]; break; }
+    }
+    var rejected = !chosen || String(chosen.kind || "").indexOf("allow") !== 0;
+    if (permQueue.length) {
+      showPending("等待你审批");
+    } else if (rejected) {
+      showPending("等待模型响应");
+    } else {
+      showPending("正在执行 " + (req.title || "工具") + "…");
+    }
+    var card = req.call_id ? toolCards[req.call_id] : null;
+    if (!card) return;
+    if (rejected) {
+      card._st.textContent = TOOL_STATUS_LABEL.cancelled || "已取消";
+      card.classList.remove("running", "done", "failed");
+      card.classList.add("cancelled");
+    } else {
+      card._st.textContent = TOOL_STATUS_LABEL.in_progress || "运行中";
+      card.classList.remove("done", "failed", "cancelled");
+      card.classList.add("running");
+    }
+    // 卡片状态变了，所在组的头部聚合状态同步刷新（不然组头还显示旧的 running 数）
+    var grp = card.closest(".tool-group");
+    if (grp) updateGroupHead(grp);
   }
 
   function clearPermissions() {
