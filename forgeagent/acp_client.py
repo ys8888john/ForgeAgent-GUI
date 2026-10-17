@@ -259,6 +259,9 @@ M_LOAD = _method(AGENT_METHODS, ("session_load", "load_session"), "session/load"
 M_SET_MODE = _method(AGENT_METHODS, ("session_set_mode", "set_session_mode"), "session/set_mode")
 # agentd 私有扩展方法（下划线前缀 = ACP ext method，见 agentd ext_method 的 docstring）
 M_APPROVAL = "_approval"
+# LSP 状态查询（预留通道）：agentd 当前无 LSP 集成，返回占位 {"status":"未接入",
+# "servers":[]}；将来接入语言服务器时在此聚合真实状态。
+M_LSP = "_lsp"
 M_UPDATE = _method(CLIENT_METHODS, ("session_update",), "session/update")
 # agent -> client 的审批请求。这个是**反方向**的方法（agent 发起、客户端应答），
 # 但它同样登记在 CLIENT_METHODS 里（"客户端要实现的那些方法"）。
@@ -514,6 +517,25 @@ class AcpClient:
             raise AcpError("agent 进程尚未启动")
         resp = await self._call(M_APPROVAL, {"policy": policy})
         return str((resp.get("result") or {}).get("policy") or policy)
+
+    async def get_lsp(self) -> dict:
+        """查 agentd 的 LSP 状态（扩展方法 ``_lsp``，预留通道）。
+
+        当前 agentd 尚无 LSP 集成，扩展方法返回占位
+        ``{"status": "未接入", "servers": []}``；旧 agentd 没实现 ``_lsp`` 时
+        ``_call`` 会收到 JSON-RPC error（未知方法），调用方（bridge）兜底成
+        同样的占位形状，前端不会崩。将来 agentd 真挂上语言服务器，返回里带上
+        各 server 的 ``name`` / ``state`` 即可，前端面板无需改动结构。
+        """
+        resp = await self._call(M_LSP, {})
+        result = resp.get("result") or {}
+        servers = result.get("servers")
+        if not isinstance(servers, list):
+            servers = []
+        return {
+            "status": str(result.get("status") or "未接入"),
+            "servers": servers,
+        }
 
     async def close(self) -> None:
         """收摊：停掉后台读取任务，终止子进程。"""

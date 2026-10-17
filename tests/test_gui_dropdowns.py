@@ -96,3 +96,26 @@ def test_trust_all_dialog_click_refreshes_approval_dropdown():
     assert 'loadApprovalState();' in m.group(1), (
         "点「完全信任」后没有刷新审批下拉 —— 弹窗与下拉的状态会漂移"
     )
+
+
+def test_right_panel_exists_with_lsp_and_plan_sections():
+    """右侧面板：面板按钮 + 抽屉容器 + LSP / 计划两个区块都在。"""
+    src = _index_text()
+    assert 'id="panel-btn"' in src, "header 缺少面板按钮（☰）"
+    assert 'id="right-panel"' in src, "缺少右侧面板容器 <aside id=\"right-panel\">"
+    assert 'id="rp-lsp-section"' in src, "面板缺少 LSP 状态区块"
+    assert 'id="rp-plan-section"' in src, "面板缺少当前计划区块"
+
+
+def test_right_panel_renders_lsp_and_plan_from_state():
+    """面板的两个区块都应由 JS 状态驱动（loadLsp / renderPanelPlan），不能写死。"""
+    src = _index_text()
+    i = src.find("function togglePanel")
+    assert i >= 0, "找不到右侧面板的开关函数"
+    # togglePanel 打开时既拉 LSP 又重画计划：两条路径都得在
+    seg = src[i:i + 1200]
+    assert "loadLsp()" in seg, "打开面板没有拉 LSP 状态"
+    assert "renderPanelPlan()" in seg, "打开面板没有重画计划区块"
+    # 计划快照必须和消息流里的计划卡同源（同一个 planState 变量）
+    assert "planState = entries.slice()" in src, "upsertPlan 没有把计划同步给右侧面板"
+    assert "planState = [];" in src, "新一轮没有清空面板计划快照"

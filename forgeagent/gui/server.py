@@ -1249,6 +1249,12 @@ class _Handler(BaseHTTPRequestHandler):
                 policy = explicit or "native"
             return self._json({"ok": True, "policy": policy, "explicit": explicit or None})
 
+        # ---- LSP 状态（右侧面板预留通道）：优先问 agentd，问不通返占位 ----
+        # agentd 当前无 LSP 集成，扩展方法 _lsp 返回 {"status":"未接入",
+        # "servers":[]}；旧 agentd / 缺 agentd 包时 bridge 已兜底，这里直接透传。
+        if path == "/api/lsp":
+            return self._json(bridge.lsp())
+
         # ---- 附件图片：只服务本进程上传过的（id 认领），别无来源 ----
         if path.startswith("/api/file/"):
             iid = path[len("/api/file/"):]

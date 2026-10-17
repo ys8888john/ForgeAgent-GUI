@@ -307,6 +307,25 @@ class Bridge:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         return {"ok": True, "policy": str(result or "")}
 
+    def lsp(self) -> dict:
+        """查询 LSP 状态（右侧面板的 LSP 区块用）。
+
+        真状态在 agentd（扩展方法 ``_lsp``）；对接旧 agentd / 假 agent（没这
+        方法）时统一兜底成 ``{"status": "未接入", "servers": []}`` 占位，前端
+        照常显示。将来 agentd 接入语言服务器，这里原样透传真实状态即可。
+        """
+        if self._closed.is_set():
+            return {"ok": False, "error": "已关闭"}
+        getter = getattr(self._client, "get_lsp", None)
+        if not callable(getter):
+            return {"ok": True, "status": "未接入", "servers": []}
+        try:
+            result = self._submit(getter()).result(timeout=10)
+        except Exception:  # noqa: BLE001 - 兜底成占位：旧 agentd 没实现 _lsp 时 _call 会抛错
+            return {"ok": True, "status": "未接入", "servers": []}
+        return {"ok": True, "status": str(result.get("status") or "未接入"),
+                "servers": result.get("servers") or []}
+
     def send(self, text: str, images: list[dict] | None = None) -> dict:
         """发一轮。立即返回，真正的流式在后台线程跑。
 

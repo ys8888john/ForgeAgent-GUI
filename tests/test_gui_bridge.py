@@ -298,6 +298,47 @@ def test_set_mode_rejected_after_close():
     assert bridge.set_mode("agent")["ok"] is False
 
 
+def test_lsp_falls_back_to_placeholder_without_client_support():
+    """对接旧 agentd / 假 agent（没 get_lsp）：统一兜底成「未接入」占位。"""
+    bridge = Bridge(client=_FakeClient())  # _FakeClient 没有 get_lsp
+    try:
+        out = bridge.lsp()
+        assert out == {"ok": True, "status": "未接入", "servers": []}
+    finally:
+        bridge.close()
+
+
+def test_lsp_returns_what_client_reports():
+    """client 有 get_lsp：原样透传（含 servers 列表）。"""
+    class _LspClient:
+        session_id = "sess_x"
+        stderr_lines: list[str] = []
+
+        async def start(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def get_lsp(self) -> dict:
+            return {"status": "已连接", "servers": [{"name": "pylsp", "state": "ready"}]}
+
+    bridge = Bridge(client=_LspClient())
+    try:
+        out = bridge.lsp()
+        assert out["ok"] is True
+        assert out["status"] == "已连接"
+        assert out["servers"] == [{"name": "pylsp", "state": "ready"}]
+    finally:
+        bridge.close()
+
+
+def test_lsp_after_close_is_error():
+    bridge = Bridge(client=_FakeClient())
+    bridge.close()
+    assert bridge.lsp()["ok"] is False
+
+
 def test_modes_event_emitted_after_start_when_declared():
     """agentd 若声明了 modes，start 之后 bridge 必须把它转成 modes 事件。"""
     fake = _FakeClient(

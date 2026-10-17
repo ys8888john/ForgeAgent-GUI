@@ -722,6 +722,12 @@ ACP 的 `ToolCallStatus` 只有 `pending / in_progress / completed / failed`，
   `AGENTD_TOOLS_APPROVE`，菜单里会提示"重启后以 env 为准"。
   **会话重命名**：右键会话条目 →「重命名…」，写本地别名（`session_aliases.json`），
   列表标题别名优先；留空提交即恢复自动标题。
+- **右侧面板（LSP 状态 + 当前计划）**：顶栏 ☰ 按钮滑出抽屉（点 ✕ / Esc 收起）。
+  两个区块：**LSP 状态**走**预留通道** `GET /api/lsp` → ACP 扩展方法 `_lsp`；
+  agentd 当前尚未接入任何语言服务器，显示「未接入」占位，将来 agentd 真挂上
+  LSP，状态会自动点亮（面板结构不用改）。**当前计划**直接复用消息流里的计划
+  快照（`planState`，与 plan 模式下的计划卡同源），进入 Plan 模式后分步计划实时
+  同步到面板，新一轮自动清空。
 - **空间（Space）：参考 WorkBuddy 的「空间」概念** —— 每个空间是一个**具名工作目录**，
   在某个空间下开的会话自动把 cwd 绑到该目录，agentd 的原生工具（读/写/检索/列目录）
   就以它为根，多空间互不串门。

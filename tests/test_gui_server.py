@@ -589,3 +589,24 @@ def test_session_rename_requires_id(server):
     with pytest.raises(urllib.error.HTTPError) as exc:
         server.client().post("/api/session/rename", {})
     assert exc.value.code == 400
+
+
+def test_lsp_endpoint_returns_placeholder_without_agent_support(server):
+    """GET /api/lsp 必须经 token，并由 bridge.lsp() 兜底成「未接入」占位。
+
+    _FakeClient 没有 get_lsp，bridge 兜底返回占位 —— 这条同时证明：接口可达、
+    鉴权生效、且对接无 LSP 能力的 agentd 不会崩。
+    """
+    import urllib.error
+    import urllib.request
+
+    # 未带 token 必须 401
+    req = urllib.request.Request(f"http://127.0.0.1:{server.port}/api/lsp")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 401
+
+    res = server.client().get("/api/lsp")
+    assert res["ok"] is True
+    assert res["status"] == "未接入"
+    assert res["servers"] == []

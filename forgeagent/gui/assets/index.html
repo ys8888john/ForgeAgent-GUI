@@ -637,6 +637,61 @@
   .dd-item .dd-name { display: flex; align-items: center; gap: 6px; font-weight: 600; }
   .dd-item .dd-desc { display: block; margin-top: 2px; color: var(--text-dim); font-weight: 400; }
   .dd-item.current { background: var(--bg-soft); }
+
+  /* 右侧面板（LSP 状态 + 当前计划）：点 header 的面板按钮滑出，对标
+     WorkBuddy 右侧抽屉。面板默认隐藏（translateX(100%)），body.panel-open
+     时滑入。固定宽度、不挤主区。 */
+  #right-panel {
+    position: fixed; top: 0; right: 0; height: 100vh; width: 320px;
+    background: var(--bg); border-left: 1px solid var(--border);
+    box-shadow: -12px 0 36px rgba(0,0,0,.12);
+    transform: translateX(100%); transition: transform .22s ease;
+    z-index: 200; display: flex; flex-direction: column;
+  }
+  body.panel-open #right-panel { transform: translateX(0); }
+  #right-panel .rp-head {
+    flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px; border-bottom: 1px solid var(--border);
+  }
+  #right-panel .rp-title { font-weight: 700; font-size: 14px; }
+  #right-panel .rp-close {
+    border: 0; background: transparent; color: var(--text-dim); cursor: pointer;
+    font-size: 18px; line-height: 1; padding: 4px 8px; border-radius: 6px;
+  }
+  #right-panel .rp-close:hover { background: var(--bg-soft); color: var(--text); }
+  #right-panel .rp-body { flex: 1 1 auto; overflow-y: auto; padding: 12px 14px; }
+  #right-panel .rp-section { margin-bottom: 22px; }
+  #right-panel .rp-section > h3 {
+    margin: 0 0 8px; font-size: 12px; letter-spacing: .03em; text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  .lsp-status {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+    padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border);
+  }
+  .lsp-status.off { color: var(--text-dim); }
+  .lsp-status.on { color: #1a7f37; border-color: #1a7f37; }
+  .lsp-status .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .lsp-note { margin: 8px 0 0; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+  .lsp-servers { list-style: none; margin: 8px 0 0; padding: 0; }
+  .lsp-servers li {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    font-size: 12px; padding: 6px 8px; border-radius: 7px; background: var(--bg-soft);
+    margin-bottom: 6px;
+  }
+  .lsp-servers .s-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lsp-servers .s-state { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; }
+  .lsp-servers .s-state.err { color: var(--danger); }
+  /* 计划条目复用消息流里的图标语义（○ ▶ ✓），与 upsertPlan 保持一致 */
+  .rp-plan { list-style: none; margin: 0; padding: 0; }
+  .rp-plan li {
+    display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.45;
+    padding: 5px 0; border-bottom: 1px dashed var(--border);
+  }
+  .rp-plan .rp-ic { flex: 0 0 auto; width: 16px; text-align: center; color: var(--text-dim); }
+  .rp-plan li.in_progress .rp-ic { color: var(--accent); }
+  .rp-plan li.completed .rp-ic { color: #1a7f37; }
+  .rp-empty { font-size: 12px; color: var(--text-dim); line-height: 1.5; margin: 0; }
   .dd-item.current .dd-name::after { content: "✓"; margin-left: auto; color: var(--accent); }
   .dd-item.dd-none .dd-name { color: var(--danger); }
   .dd-hint {
@@ -1091,6 +1146,7 @@
       <button id="space-new" title="新建空间（未指定目录则落在 ~/.agentd/spaces/ 下）">+空间</button>
       <select id="model-select" title="热切换模型（不重启 agentd，下一轮对话生效；当前会话保留）"></select>
       <span class="spacer"></span>
+      <button id="panel-btn" title="面板：LSP 状态 / 当前计划">☰</button>
       <button id="settings-btn" title="设置：MCP 配置 / 模型管理 / 个性化设置 / agent 日志 / 主题">⚙</button>
     </header>
 
@@ -1181,6 +1237,30 @@
       <input id="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple hidden>
     </div>
     <div class="hint">Ctrl/Cmd + L 看日志　·　Ctrl/Cmd + Enter 发送　·　点左侧会话可续聊</div>
+
+    <!-- 右侧面板：LSP 状态 + 当前计划（点 header 的 ☰ 按钮滑出）。
+         LSP 走预留通道（/api/lsp）：agentd 当前未接入任何语言服务器，显示
+         「未接入」占位；将来 agentd 真挂上 LSP，状态会自动点亮。计划直接
+         复用 upsertPlan 维护的 planState 快照，与消息流里的计划卡同源。 -->
+    <aside id="right-panel" aria-hidden="true">
+      <div class="rp-head">
+        <span class="rp-title">面板</span>
+        <button class="rp-close" id="rp-close" type="button" title="关闭面板">✕</button>
+      </div>
+      <div class="rp-body">
+        <section class="rp-section" id="rp-lsp-section">
+          <h3>LSP 状态</h3>
+          <span class="lsp-status off" id="lsp-status"><span class="dot"></span><span id="lsp-status-text">未接入</span></span>
+          <p class="lsp-note" id="lsp-note">agentd 尚未接入语言服务器。此通道已预留，接入后这里会显示各语言服务器的实时状态。</p>
+          <ul class="lsp-servers" id="lsp-servers"></ul>
+        </section>
+        <section class="rp-section" id="rp-plan-section">
+          <h3>当前计划</h3>
+          <ul class="rp-plan" id="rp-plan"></ul>
+          <p class="rp-empty" id="rp-plan-empty">暂无计划。进入 Plan 模式后，分步计划会实时显示在这里。</p>
+        </section>
+      </div>
+    </aside>
 
     <div id="log-pane">
       <div class="bar"><button id="log-close">关闭</button></div>
@@ -2112,6 +2192,82 @@
 
   loadApprovalState();
 
+  /* ---- 右侧面板：LSP 状态 + 当前计划 ----
+     点 header 的 ☰ 滑出；LSP 走预留通道（/api/lsp），计划复用 planState 快照。 */
+  var rightPanel = document.getElementById("right-panel");
+  var panelBtn = document.getElementById("panel-btn");
+  var rpClose = document.getElementById("rp-close");
+
+  function togglePanel(force) {
+    var open = force === undefined ? !document.body.classList.contains("panel-open") : force;
+    document.body.classList.toggle("panel-open", open);
+    rightPanel.setAttribute("aria-hidden", open ? "false" : "true");
+    if (open) {
+      loadLsp();        // 打开即拉一次 LSP 状态（将来 agentd 接入后自动点亮）
+      renderPanelPlan(); // 计划快照此时就是最新的
+    }
+  }
+
+  function loadLsp() {
+    api("/api/lsp").then(function (r) {
+      lspState = { status: (r && r.status) || "未接入", servers: (r && r.servers) || [] };
+      renderPanelLsp();
+    }).catch(function () { renderPanelLsp(); });
+  }
+
+  function renderPanelLsp() {
+    var statusEl = document.getElementById("lsp-status");
+    var textEl = document.getElementById("lsp-status-text");
+    var serversEl = document.getElementById("lsp-servers");
+    if (!statusEl) return;
+    var on = lspState.status && lspState.status !== "未接入";
+    statusEl.classList.toggle("on", !!on);
+    statusEl.classList.toggle("off", !on);
+    textEl.textContent = lspState.status || "未接入";
+    serversEl.innerHTML = "";
+    (lspState.servers || []).forEach(function (s) {
+      var li = document.createElement("li");
+      var name = document.createElement("span");
+      name.className = "s-name";
+      name.textContent = s.name || "(未命名)";
+      var st = document.createElement("span");
+      st.className = "s-state" + (s.state === "error" ? " err" : "");
+      st.textContent = s.state || "ready";
+      li.appendChild(name); li.appendChild(st);
+      serversEl.appendChild(li);
+    });
+  }
+
+  function renderPanelPlan() {
+    var ul = document.getElementById("rp-plan");
+    var empty = document.getElementById("rp-plan-empty");
+    if (!ul) return;
+    ul.innerHTML = "";
+    var entries = planState || [];
+    empty.style.display = entries.length ? "none" : "";
+    entries.forEach(function (e) {
+      var st = e.status || "pending";
+      var li = document.createElement("li");
+      li.className = st;
+      var ic = document.createElement("span");
+      ic.className = "rp-ic";
+      ic.textContent = PLAN_ICONS[st] || "○";
+      var tx = document.createElement("span");
+      tx.textContent = e.content || "";
+      li.appendChild(ic); li.appendChild(tx);
+      ul.appendChild(li);
+    });
+  }
+
+  panelBtn.addEventListener("click", function () { togglePanel(); });
+  rpClose.addEventListener("click", function () { togglePanel(false); });
+  // 面板是抽屉，关靠 ✕；Esc 也能关（与其它浮层一致）
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && document.body.classList.contains("panel-open")) togglePanel(false);
+  });
+  // 脚本启动即拉一次 LSP 状态，面板打开时就是最新的（不依赖用户先手动刷）
+  loadLsp();
+
   /* HIGHLIGHT-BEGIN
      —— 保守的零依赖语法高亮（node 断言测试锚定本段，
      见 tests/test_frontend_highlight.py：改动请保持纯字符串 in/out、不碰 DOM） */
@@ -2414,12 +2570,18 @@
   // 循环），不是计时器动画。
   var PLAN_ICONS = { pending: "○", in_progress: "▶", completed: "✓" };
   var planCard = null;
+  // 右侧面板用的计划快照：与消息流里的计划卡同源（upsertPlan 写入、新一轮清零）。
+  var planState = [];
+  var lspState = { status: "未接入", servers: [] };
 
   function upsertPlan(ev) {
     var entries = ev.entries || [];
     // 空计划不建卡：bridge 理论上已拦掉空事件（2026-10-14 修），这里兜底防
     // 旧版本事件/手搓消息 —— 否则每回合都会多一张只有标题的「执行计划」空卡。
     if (!entries.length) return;
+    // 同步到右侧面板的计划快照（与消息流计划卡同源，避免两份状态漂移）。
+    planState = entries.slice();
+    renderPanelPlan();
     if (!planCard) {
       planCard = document.createElement("div");
       planCard.className = "bubble plan";
@@ -4655,6 +4817,8 @@
       if (autoScroll) scrollToBottom();
       toolCards = {};  // 新一轮，卡片表清空（id 理论上不冲突，防御性重置）
       planCard = null;  // 上一轮的计划卡不带到新回合（DOM 里旧的留着，只放引用）
+      planState = [];  // 上一轮的计划快照不带到新回合（面板随之清空）
+      renderPanelPlan();
       // 新一轮：本轮归组状态复位，下一轮的工具调用不会再缝进上一轮的标签
       currentToolGroup = null;
       currentRoundFirstCard = null;

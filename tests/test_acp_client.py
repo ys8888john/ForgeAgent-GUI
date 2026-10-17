@@ -815,6 +815,38 @@ async def test_get_and_set_approval_use_ext_method(monkeypatch):
     assert calls == [("_approval", {}), ("_approval", {"policy": "none"})]
 
 
+async def test_get_lsp_uses_ext_method_and_parses_placeholder(monkeypatch):
+    """get_lsp 走 `_lsp` 扩展方法，并把结果折成 {status, servers} 形状。
+
+    返回值缺字段时兜底成「未接入」占位（agentd 当前无 LSP 集成）。
+    """
+    client = AcpClient()
+    client._proc = object()
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_call(method, params):
+        calls.append((method, params))
+        if method == "_lsp":
+            return {"result": {"status": "未接入", "servers": []}}
+        return {"result": {}}
+
+    monkeypatch.setattr(client, "_call", fake_call)
+    assert await client.get_lsp() == {"status": "未接入", "servers": []}
+    assert calls == [("_lsp", {})]
+
+
+async def test_get_lsp_fills_missing_fields(monkeypatch):
+    """agentd 返回里缺 servers / status 时各自兜底，前端不会拿到 undefined。"""
+    client = AcpClient()
+    client._proc = object()
+
+    async def fake_call(method, params):
+        return {"result": {}}
+
+    monkeypatch.setattr(client, "_call", fake_call)
+    assert await client.get_lsp() == {"status": "未接入", "servers": []}
+
+
 async def test_set_approval_requires_running_agent():
     """没起子进程就调 set：当场 AcpError，而不是发一帧永远没人回的请求。"""
     client = AcpClient()
