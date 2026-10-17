@@ -172,13 +172,19 @@ def _index_text() -> str:
     return _INDEX.read_text(encoding="utf-8")
 
 
-def test_index_has_plan_card_renderer():
+def test_index_routes_plan_to_right_panel():
+    """计划详情只住在右侧面板：upsertPlan 同步快照，不再往消息流建卡。"""
     src = _index_text()
     assert "function upsertPlan(ev)" in src
-    assert 'className = "bubble plan"' in src
-    # 三个状态都要有图标（漏一个界面就出空白行）
+    # 旧的消息流计划卡必须删干净（用户明确要求计划不占对话区）
+    assert "bubble plan" not in src, "消息流计划卡没有删干净"
+    assert "planCard" not in src, "planCard 引用残留"
+    # 三个状态都要有图标（漏一个面板就出空白行）
     for frag in ('pending: "○"', 'in_progress: "▶"', 'completed: "✓"'):
         assert frag in src, f"计划状态图标少了：{frag}"
+    # 快照同步进面板
+    assert "planState = entries.slice()" in src
+    assert "renderPanelPlan();" in src
 
 
 def test_index_handle_branches_plan_event():
@@ -187,13 +193,30 @@ def test_index_handle_branches_plan_event():
     assert "upsertPlan(ev);" in src
 
 
-def test_index_resets_plan_card_on_new_turn():
-    """新回合必须放掉计划卡引用，否则旧卡片被就地更新成新计划。"""
+def test_index_auto_opens_panel_on_first_plan_snapshot():
+    """本轮第一份计划快照要自动展开右侧面板——计划不在对话区了，
+    用户必须能「看见它去哪了」；且只在首份快照拉，用户手动收起后不再弹回。"""
     src = _index_text()
-    assert "planCard = null;" in src
+    i = src.find("function upsertPlan")
+    j = src.find("function renderDiffOutput", i)
+    assert i >= 0 and j > i, "找不到 upsertPlan 函数段"
+    seg = src[i:j]
+    assert 'document.body.classList.contains("panel-open")' in seg, (
+        "首份计划快照没有判断面板开合 —— 面板不会自动展开，计划进度没人看得见"
+    )
+    assert "togglePanel(true)" in seg, "首份计划快照没有展开面板"
+    assert "firstOfRound" in seg, "没有按「本轮首份快照」限流 —— 用户收起面板会被强行弹回"
 
 
-def test_index_has_plan_card_css():
+def test_index_resets_plan_snapshot_on_new_turn():
+    """新回合必须清空面板计划快照，否则上一轮的旧步骤挂在新回合的面板上。"""
     src = _index_text()
-    assert ".bubble.plan {" in src
-    assert ".plan-item.in_progress .plan-icon" in src
+    assert "planState = [];  // 上一轮的计划快照不带到新回合" in src
+
+
+def test_index_plan_lives_in_right_panel_css():
+    """计划渲染样式在右侧面板：旧 .bubble.plan 一族 CSS 必须已删。"""
+    src = _index_text()
+    assert ".bubble.plan {" not in src, "旧计划卡 CSS 残留"
+    assert ".plan-item.in_progress .plan-icon" not in src, "旧计划卡 CSS 残留"
+    assert ".rp-plan li.in_progress .rp-ic" in src, "面板计划条目样式缺失"

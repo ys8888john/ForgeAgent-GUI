@@ -1022,31 +1022,8 @@
   }
   .pf-goto { font-size: 11px; }
 
-  /* ---- 计划卡片（plan 模式）---- */
-  /* 一个回合一张卡：agentd 的 plan 通知带全量条目快照，整份替换渲染。
-     条目状态背后是内核真跑完一步（每步 = 一轮完整 agent 循环），不是动画。 */
-  .bubble.plan {
-    /* 计划卡贴右：它是回合级前言，跟在右侧更像"侧栏式进度"，
-       不和左侧的 assistant 正文/思考框抢视线。flex-end + 无 width
-       让它按内容收缩（最多 82%）而非拉伸成整块。 */
-    align-self: flex-end;
-    border: 1px solid var(--border);
-    background: var(--bg-soft);
-    padding: 10px 12px;
-  }
-  .plan-head {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px;
-  }
-  .plan-count { font-weight: 400; color: var(--text-dim); }
-  .plan-list { display: flex; flex-direction: column; gap: 5px; }
-  .plan-item { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; line-height: 1.5; }
-  .plan-icon { flex: 0 0 14px; text-align: center; }
-  .plan-item.pending .plan-icon { color: var(--text-dim); }
-  .plan-item.in_progress .plan-icon { color: var(--accent); }
-  .plan-item.in_progress .plan-text { color: var(--text); font-weight: 500; }
-  .plan-item.completed .plan-icon { color: var(--ok); }
-  .plan-item.completed .plan-text { color: var(--text-dim); }
+  /* 计划卡片（.bubble.plan 一族）已删：计划详情 2026-10-17 起只住在右侧面板
+     （#right-panel 的 .rp-plan 一族，见上方「右侧面板」段），不再占对话区。 */
 
   /* ---- 会话右键菜单 ---- */
   #ctx-menu {
@@ -2565,58 +2542,28 @@
 
   // ---- 计划卡片（plan 模式）----
   // bridge 的 plan 事件带全量条目快照 [{content, priority, status}]，整份替换渲染。
-  // 一个回合一张卡：首条 plan 事件建卡（此时正在等审批或刚开始执行），后续事件
-  // 就地更新条目状态。状态图标背后是内核真跑完一步（每步 = 一轮完整 agent
-  // 循环），不是计时器动画。
+  // 计划详情只住在右侧面板（2026-10-17 从消息流计划卡迁出——用户明确要求
+  // 「执行计划不要占对话区」）。状态图标背后是内核真跑完一步（每步 = 一轮
+  // 完整 agent 循环），不是计时器动画。
   var PLAN_ICONS = { pending: "○", in_progress: "▶", completed: "✓" };
-  var planCard = null;
-  // 右侧面板用的计划快照：与消息流里的计划卡同源（upsertPlan 写入、新一轮清零）。
+  // 右侧面板的计划快照：upsertPlan 写入、新一轮清零（user 事件处）。
   var planState = [];
   var lspState = { status: "未接入", servers: [] };
 
   function upsertPlan(ev) {
     var entries = ev.entries || [];
-    // 空计划不建卡：bridge 理论上已拦掉空事件（2026-10-14 修），这里兜底防
-    // 旧版本事件/手搓消息 —— 否则每回合都会多一张只有标题的「执行计划」空卡。
+    // 空计划不理：bridge 理论上已拦掉空事件（2026-10-14 修），这里兜底防
+    // 旧版本事件/手搓消息把面板里的计划清成空白。
     if (!entries.length) return;
-    // 同步到右侧面板的计划快照（与消息流计划卡同源，避免两份状态漂移）。
+    var firstOfRound = !planState.length;
     planState = entries.slice();
     renderPanelPlan();
-    if (!planCard) {
-      planCard = document.createElement("div");
-      planCard.className = "bubble plan";
-      var head = document.createElement("div");
-      head.className = "plan-head";
-      var title = document.createElement("span");
-      title.textContent = "执行计划";
-      var count = document.createElement("span");
-      count.className = "plan-count";
-      head.appendChild(title); head.appendChild(count);
-      var list = document.createElement("div");
-      list.className = "plan-list";
-      planCard.appendChild(head); planCard.appendChild(list);
-      planCard._list = list; planCard._count = count;
-      // 直接挂进消息流（不进工具组）：计划是回合级的前言，不是某一次工具调用
-      messages.appendChild(planCard);
+    // 本轮第一份计划快照到达时自动展开面板 —— 计划不在对话区了，用户得
+    // 能"看见它去哪了"；此刻通常正等着计划审批，面板正好挨着弹窗。
+    // 只在首份快照时拉：用户中途手动收起面板后，后续步骤更新不再强行弹回。
+    if (firstOfRound && !document.body.classList.contains("panel-open")) {
+      togglePanel(true);
     }
-    var done = 0;
-    planCard._list.innerHTML = "";
-    entries.forEach(function (e) {
-      var st = e.status || "pending";
-      if (st === "completed") done++;
-      var row = document.createElement("div");
-      row.className = "plan-item " + st;
-      var icon = document.createElement("span");
-      icon.className = "plan-icon";
-      icon.textContent = PLAN_ICONS[st] || "○";
-      var text = document.createElement("span");
-      text.className = "plan-text";
-      text.textContent = e.content || "";
-      row.appendChild(icon); row.appendChild(text);
-      planCard._list.appendChild(row);
-    });
-    planCard._count.textContent = entries.length ? done + "/" + entries.length : "";
-    if (autoScroll) scrollToBottom();
   }
 
   // edit/write 的输出带 unified diff（agentd 保证行首 ---/+++/@@/-/+）。
@@ -4816,8 +4763,7 @@
       if (ev.images && ev.images.length) renderUserImages(b, ev.images);
       if (autoScroll) scrollToBottom();
       toolCards = {};  // 新一轮，卡片表清空（id 理论上不冲突，防御性重置）
-      planCard = null;  // 上一轮的计划卡不带到新回合（DOM 里旧的留着，只放引用）
-      planState = [];  // 上一轮的计划快照不带到新回合（面板随之清空）
+      planState = [];  // 上一轮的计划快照不带到新回合（面板随之清空，新计划首帧会重新展开面板）
       renderPanelPlan();
       // 新一轮：本轮归组状态复位，下一轮的工具调用不会再缝进上一轮的标签
       currentToolGroup = null;
@@ -4880,8 +4826,9 @@
     }
 
     if (ev.type === "plan") {
-      // 计划快照（plan 模式）：整份替换渲染成计划卡。此刻通常在等审批
-      // （permission 事件会把标签改成"等待你审批"）或刚开始逐步执行。
+      // 计划快照（plan 模式）：整份替换右侧面板的计划区块（首份快照会自动
+      // 展开面板）。此刻通常在等审批（permission 事件会把标签改成
+      // "等待你审批"）或刚开始逐步执行。
       upsertPlan(ev);
       showPending("正在执行计划…");
       return;
